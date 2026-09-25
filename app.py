@@ -322,6 +322,14 @@ def archive_task(task_id: int):
         return {"ok":True}
 
 
+@app.delete("/api/tasks/{task_id}/hard")
+def delete_task_permanently(task_id: int):
+    with db() as conn:
+        task_row(conn, task_id)
+        conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        return {"ok":True}
+
+
 @app.post("/api/today/{task_id}")
 def add_today(task_id: int):
     with db() as conn:
