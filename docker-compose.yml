@@ -1,0 +1,11 @@
+services:
+  casa-tareas:
+    build: .
+    container_name: casa-tareas
+    restart: unless-stopped
+    ports:
+      - "3000:8000"
+    environment:
+      APP_TIMEZONE: Europe/Zurich
+    volumes:
+      - ./data:/app/data
