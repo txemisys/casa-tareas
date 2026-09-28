@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
+import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -18,8 +22,11 @@ DATA_DIR = Path(os.getenv("APP_DATA_DIR", BASE_DIR / "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "chores.db"
 TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Zurich"))
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_POLL_SECONDS = max(30, int(os.getenv("TELEGRAM_POLL_SECONDS", "60") or "60"))
+TELEGRAM_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="0.2.0")
+app = FastAPI(title="Casa Tareas", version="0.6.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -114,6 +121,14 @@ def init_db():
           PRIMARY KEY(event_id, reminder_minutes),
           FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS notification_deliveries(
+          event_id INTEGER NOT NULL,
+          reminder_minutes INTEGER NOT NULL,
+          channel TEXT NOT NULL,
+          delivered_at TEXT NOT NULL,
+          PRIMARY KEY(event_id, reminder_minutes, channel),
+          FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS completions(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           task_id INTEGER NOT NULL,
@@ -151,6 +166,8 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_completions_task ON completions(task_id, completed_at DESC);
         CREATE INDEX IF NOT EXISTS idx_events_at ON events(active, event_at);
+        CREATE INDEX IF NOT EXISTS idx_notification_deliveries
+          ON notification_deliveries(channel, event_id, reminder_minutes);
         CREATE INDEX IF NOT EXISTS idx_undo_open ON undo_actions(undone_at, id DESC);
         """)
 
@@ -479,6 +496,199 @@ def due_event_alerts(conn, events):
     return alerts
 
 
+def get_meta(conn, key, default=None):
+    row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_meta(conn, key, value):
+    conn.execute(
+        """INSERT INTO app_meta(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (key, str(value)),
+    )
+
+
+def delete_meta(conn, key):
+    conn.execute("DELETE FROM app_meta WHERE key=?", (key,))
+
+
+def telegram_status(conn):
+    chat_id = get_meta(conn, "telegram_chat_id")
+    return {
+        "token_configured": bool(TELEGRAM_BOT_TOKEN),
+        "chat_id": int(chat_id) if chat_id else None,
+        "chat_title": get_meta(conn, "telegram_chat_title", ""),
+        "poll_seconds": TELEGRAM_POLL_SECONDS,
+    }
+
+
+def telegram_api_request(method, payload=None):
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("Falta TELEGRAM_BOT_TOKEN en la configuración del contenedor")
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    body = urllib.parse.urlencode(payload or {}).encode("utf-8")
+    request = urllib.request.Request(url, data=body, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("description")
+        except Exception:
+            detail = None
+        raise RuntimeError(detail or f"Telegram devolvió HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"No se pudo contactar con Telegram: {exc}") from exc
+    if not data.get("ok"):
+        raise RuntimeError(data.get("description") or "Telegram rechazó la petición")
+    return data.get("result")
+
+
+def telegram_detect_chats():
+    updates = telegram_api_request(
+        "getUpdates",
+        {
+            "limit": 100,
+            "timeout": 0,
+            "allowed_updates": json.dumps(["message", "channel_post", "my_chat_member"]),
+        },
+    )
+    chats = {}
+    for update in updates or []:
+        source = update.get("message") or update.get("channel_post") or update.get("my_chat_member")
+        if not source:
+            continue
+        chat = source.get("chat")
+        if not chat or "id" not in chat:
+            continue
+        chat_id = int(chat["id"])
+        title = (
+            chat.get("title")
+            or " ".join(x for x in [chat.get("first_name"), chat.get("last_name")] if x)
+            or chat.get("username")
+            or str(chat_id)
+        )
+        chats[chat_id] = {
+            "chat_id": chat_id,
+            "title": title,
+            "type": chat.get("type", "unknown"),
+        }
+    return sorted(chats.values(), key=lambda x: (x["type"], x["title"].lower()))
+
+
+def telegram_reminder_label(minutes):
+    if minutes == 0:
+        return "ahora"
+    if minutes < 60:
+        return f"{minutes} min antes"
+    if minutes % 1440 == 0:
+        days = minutes // 1440
+        return f"{days} día{'s' if days != 1 else ''} antes"
+    if minutes % 60 == 0:
+        hours = minutes // 60
+        return f"{hours} hora{'s' if hours != 1 else ''} antes"
+    return f"{minutes} min antes"
+
+
+def telegram_event_message(event, reminder_minutes):
+    event_at = normalize_event_at(event["event_at"])
+    area_name = event.get("area_name")
+    lines = [
+        "🔔 Casa Tareas",
+        "",
+        event["title"],
+    ]
+    if area_name:
+        lines.append(f"🏠 {area_name}")
+    lines.append(f"📅 {event_at.strftime('%d.%m.%Y · %H:%M')}")
+    lines.append(f"⏰ {telegram_reminder_label(reminder_minutes)}")
+    description = (event.get("description") or "").strip()
+    if description:
+        lines.extend(["", description[:1200]])
+    return "\n".join(lines)
+
+
+def process_telegram_reminders():
+    if not TELEGRAM_BOT_TOKEN:
+        return 0
+
+    with db() as conn:
+        chat_id = get_meta(conn, "telegram_chat_id")
+        if not chat_id:
+            return 0
+        now = now_local()
+        rows = conn.execute(
+            """SELECT e.*, a.name area_name
+               FROM events e
+               LEFT JOIN areas a ON a.id=e.area_id
+               WHERE e.active=1
+               ORDER BY e.event_at,e.id"""
+        ).fetchall()
+
+        candidates = []
+        for row in rows:
+            event = dict(row)
+            event_at = normalize_event_at(event["event_at"])
+            if event_at < now - timedelta(minutes=30):
+                continue
+            try:
+                reminders = normalize_reminders(json.loads(event["reminders_json"] or "[]"))
+            except (json.JSONDecodeError, TypeError):
+                reminders = []
+
+            due = [
+                minutes
+                for minutes in reminders
+                if event_at - timedelta(minutes=minutes) <= now
+            ]
+            if not due:
+                continue
+
+            most_recent = min(due)
+            delivered = conn.execute(
+                """SELECT 1 FROM notification_deliveries
+                   WHERE event_id=? AND reminder_minutes=? AND channel='telegram'""",
+                (event["id"], most_recent),
+            ).fetchone()
+            if delivered:
+                continue
+
+            candidates.append((event, most_recent, due, int(chat_id)))
+
+    sent = 0
+    for event, most_recent, due, chat_id in candidates:
+        telegram_api_request(
+            "sendMessage",
+            {
+                "chat_id": str(chat_id),
+                "text": telegram_event_message(event, most_recent),
+            },
+        )
+        delivered_at = iso_now()
+        with db() as conn:
+            for minutes in due:
+                conn.execute(
+                    """INSERT OR IGNORE INTO notification_deliveries(
+                       event_id,reminder_minutes,channel,delivered_at
+                       ) VALUES(?,?,'telegram',?)""",
+                    (event["id"], minutes, delivered_at),
+                )
+        sent += 1
+    return sent
+
+
+async def telegram_reminder_loop():
+    while True:
+        try:
+            await asyncio.to_thread(process_telegram_reminders)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"Telegram reminder error: {exc}", flush=True)
+        await asyncio.sleep(TELEGRAM_POLL_SECONDS)
+
+
 def task_json(conn, task):
     d = dict(task)
     d["active"] = bool(d["active"])
@@ -574,6 +784,11 @@ class EventIn(BaseModel):
     reminders: list[int] = Field(default_factory=lambda: [1440])
 
 
+class TelegramChatIn(BaseModel):
+    chat_id: int
+    title: str = Field(default="", max_length=200)
+
+
 class CompleteIn(BaseModel):
     person_id: int
 
@@ -593,8 +808,23 @@ class PersonIn(BaseModel):
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
+    global TELEGRAM_TASK
     init_db()
+    if TELEGRAM_BOT_TOKEN:
+        TELEGRAM_TASK = asyncio.create_task(telegram_reminder_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    global TELEGRAM_TASK
+    if TELEGRAM_TASK:
+        TELEGRAM_TASK.cancel()
+        try:
+            await TELEGRAM_TASK
+        except asyncio.CancelledError:
+            pass
+        TELEGRAM_TASK = None
 
 
 @app.get("/")
@@ -604,7 +834,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.5.0"}
+    return {"ok": True, "version": "0.6.0"}
 
 
 @app.get("/api/state")
@@ -699,10 +929,79 @@ def state():
             "event_today": event_today,
             "event_upcoming": event_upcoming,
             "alerts_due": alerts_due,
+            "telegram": telegram_status(conn),
             "history": history,
             "stats": stats,
             "last_undo": latest_undo(conn),
         }
+
+
+@app.get("/api/telegram/status")
+def get_telegram_status():
+    with db() as conn:
+        return telegram_status(conn)
+
+
+@app.post("/api/telegram/chats")
+def detect_telegram_chats():
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(400, "Configura TELEGRAM_BOT_TOKEN y reinicia el contenedor")
+    try:
+        return {"chats": telegram_detect_chats()}
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.put("/api/telegram/chat")
+def configure_telegram_chat(payload: TelegramChatIn):
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(400, "Configura TELEGRAM_BOT_TOKEN y reinicia el contenedor")
+    try:
+        chat = telegram_api_request("getChat", {"chat_id": str(payload.chat_id)})
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+
+    title = (
+        chat.get("title")
+        or " ".join(x for x in [chat.get("first_name"), chat.get("last_name")] if x)
+        or chat.get("username")
+        or payload.title
+        or str(payload.chat_id)
+    )
+    with db() as conn:
+        set_meta(conn, "telegram_chat_id", payload.chat_id)
+        set_meta(conn, "telegram_chat_title", title)
+    return {"ok": True, "chat_id": payload.chat_id, "chat_title": title}
+
+
+@app.delete("/api/telegram/chat")
+def disconnect_telegram_chat():
+    with db() as conn:
+        delete_meta(conn, "telegram_chat_id")
+        delete_meta(conn, "telegram_chat_title")
+    return {"ok": True}
+
+
+@app.post("/api/telegram/test")
+def test_telegram():
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(400, "Configura TELEGRAM_BOT_TOKEN y reinicia el contenedor")
+    with db() as conn:
+        chat_id = get_meta(conn, "telegram_chat_id")
+        title = get_meta(conn, "telegram_chat_title", "")
+    if not chat_id:
+        raise HTTPException(400, "Selecciona primero un chat de Telegram")
+    try:
+        telegram_api_request(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": "✅ Casa Tareas está conectado con Telegram. Los recordatorios se enviarán a este chat.",
+            },
+        )
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    return {"ok": True, "chat_title": title}
 
 
 @app.post("/api/events")
