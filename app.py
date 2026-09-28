@@ -1162,6 +1162,7 @@ def telegram_find_area(conn, query):
 
 
 def telegram_task_or_error(conn, query):
+    sync_pause_states(conn)
     matches = telegram_find_task(conn, query)
     if not matches:
         raise ValueError(f'No encuentro una tarea activa que coincida con "{query}".')
@@ -1170,6 +1171,9 @@ def telegram_task_or_error(conn, query):
         raise ValueError(
             "Hay varias tareas que coinciden. Usa el título completo o el #id:\n" + choices
         )
+    pause = effective_task_pause(conn, matches[0])
+    if pause:
+        raise ValueError(f'La tarea está pausada hasta {pause["return_date"]}.')
     return matches[0]
 
 
@@ -2323,8 +2327,18 @@ def update_task(task_id: int, payload: TaskIn):
     if payload.task_type not in {"execution", "management"}:
         raise HTTPException(400, "Tipo de tarea no válido")
     with db() as conn:
-        task_row(conn, task_id)
+        sync_pause_states(conn)
+        task = task_row(conn, task_id)
         validate_task_responsibility(conn, payload.area_id, payload.owner_person_id)
+        if payload.area_id != task["area_id"]:
+            if effective_task_pause(conn, task):
+                raise HTTPException(409, "No se puede mover de área una tarea mientras está pausada")
+            destination_pause = pause_for_area_id(conn, payload.area_id)
+            if destination_pause:
+                raise HTTPException(
+                    409,
+                    f'El área de destino está pausada hasta {destination_pause["return_date"]}',
+                )
         due = payload.initial_due_date or today_local().isoformat()
         anchor = payload.anchor_date or due
         conn.execute(
@@ -2357,7 +2371,10 @@ def update_task(task_id: int, payload: TaskIn):
 @app.put("/api/tasks/{task_id}/area")
 def move_task_area(task_id: int, payload: AreaMoveIn):
     with db() as conn:
+        sync_pause_states(conn)
         task = task_row(conn, task_id)
+        if effective_task_pause(conn, task):
+            raise HTTPException(409, "No se puede mover de área una tarea mientras está pausada")
         if payload.area_id is not None:
             area = conn.execute(
                 "SELECT id FROM areas WHERE id=? AND active=1",
@@ -2369,6 +2386,13 @@ def move_task_area(task_id: int, payload: AreaMoveIn):
         previous_area_id = task["area_id"]
         if previous_area_id == payload.area_id:
             return {"ok": True, "undo_id": None}
+
+        destination_pause = pause_for_area_id(conn, payload.area_id)
+        if destination_pause:
+            raise HTTPException(
+                409,
+                f'El área de destino está pausada hasta {destination_pause["return_date"]}',
+            )
 
         conn.execute(
             "UPDATE tasks SET area_id=? WHERE id=?",
