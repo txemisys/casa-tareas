@@ -512,3 +512,27 @@ def test_task_cannot_be_moved_into_archived_area(client):
         json={"area_id": area_id},
     )
     assert response.status_code == 400
+
+
+def test_requested_household_people_and_areas_are_seeded_idempotently(client):
+    state = get_state(client)
+    assert [p["name"] for p in state["people"]] == ["Cosi", "Jose", "Li"]
+
+    expected_areas = {
+        "Piso Fanalwegle",
+        "Piso Im Gapetsch",
+        "Casa de Cosi",
+        "Vehículos",
+        "Krankenkassen",
+    }
+    names = {a["name"] for a in state["areas"]}
+    assert expected_areas.issubset(names)
+
+    # Volver a inicializar no debe duplicar personas ni áreas.
+    import app as app_module
+    app_module.init_db()
+    again = get_state(client)
+    assert [p["name"] for p in again["people"]] == ["Cosi", "Jose", "Li"]
+    area_names = [a["name"] for a in again["areas_all"]]
+    for name in expected_areas:
+        assert area_names.count(name) == 1
