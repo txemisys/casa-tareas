@@ -3442,6 +3442,13 @@ def start_vacation(payload: VacationIn):
             "excluded_area_ids": excluded,
         }
         set_meta(conn, "vacation_state", json.dumps(value))
+        log_activity(
+            conn,
+            "vacation_started",
+            f'Modo vacaciones hasta {target.isoformat()}',
+            detail="La Agenda continúa activa.",
+            entity_type="vacation",
+        )
         return {"ok": True, "vacation": get_vacation(conn)}
 
 
@@ -3452,6 +3459,12 @@ def end_vacation():
         if not get_meta(conn, "vacation_state"):
             return {"ok": True, "already_inactive": True}
         finish_vacation(conn, today_local().isoformat())
+        log_activity(
+            conn,
+            "vacation_ended",
+            "Terminado el modo vacaciones",
+            entity_type="vacation",
+        )
         return {"ok": True, "already_inactive": False}
 
 
@@ -3964,6 +3977,13 @@ def create_area(payload: AreaIn):
                     existing["id"],
                 ),
             )
+            log_activity(
+                conn,
+                "area_restored",
+                f'Reactivada el área "{name}"',
+                entity_type="area",
+                entity_id=existing["id"],
+            )
             return {"id": existing["id"], "reactivated": True}
 
         cur = conn.execute(
@@ -3977,7 +3997,15 @@ def create_area(payload: AreaIn):
                 payload.owner_person_id,
             ),
         )
-        return {"id": cur.lastrowid, "reactivated": False}
+        area_id = cur.lastrowid
+        log_activity(
+            conn,
+            "area_created",
+            f'Creada el área "{name}"',
+            entity_type="area",
+            entity_id=area_id,
+        )
+        return {"id": area_id, "reactivated": False}
 
 
 @app.put("/api/areas/{area_id}")
@@ -4006,6 +4034,13 @@ def update_area(area_id: int, payload: AreaIn):
             )
         except sqlite3.IntegrityError:
             raise HTTPException(409, "Ya existe un área con ese nombre")
+        log_activity(
+            conn,
+            "area_updated",
+            f'Actualizada el área "{name}"',
+            entity_type="area",
+            entity_id=area_id,
+        )
         return {"ok": True}
 
 
@@ -4023,6 +4058,13 @@ def archive_area(area_id: int):
             "area_active",
             {"area_id": area_id, "previous_active": 1},
             f'Archivada el área "{area["name"]}"',
+        )
+        log_activity(
+            conn,
+            "area_archived",
+            f'Archivada el área "{area["name"]}"',
+            entity_type="area",
+            entity_id=area_id,
         )
         return {"ok": True, "undo_id": undo_id}
 
@@ -4077,6 +4119,13 @@ def restore_area(area_id: int):
             "area_active",
             {"area_id": area_id, "previous_active": 0},
             f'Reactivada el área "{area["name"]}"',
+        )
+        log_activity(
+            conn,
+            "area_restored",
+            f'Reactivada el área "{area["name"]}"',
+            entity_type="area",
+            entity_id=area_id,
         )
         return {"ok": True, "undo_id": undo_id}
 
