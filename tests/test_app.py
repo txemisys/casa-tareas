@@ -2178,3 +2178,174 @@ def test_remove_from_today_is_idempotent(client):
         "undo_id": None,
         "already_removed": True,
     }
+
+
+def test_completed_today_task_can_return_to_today(client):
+    import app as app_module
+
+    base = app_module.today_local()
+    due = (base + timedelta(days=3)).isoformat()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Realización reversible",
+            recurrence_type="cycle",
+            frequency_days=10,
+            initial_due_date=due,
+            anchor_date=due,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    assert client.post(f"/api/today/{task_id}").status_code == 200
+    before = get_state(client)
+    original_today_order = [t["id"] for t in before["today"]]
+    original_task = task_from_state(before, task_id)
+
+    person_id = before["people"][0]["id"]
+    completed = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    )
+    assert completed.status_code == 200
+
+    after_complete = get_state(client)
+    history_item = next(
+        h for h in after_complete["history"] if h["task_id"] == task_id
+    )
+    assert history_item["can_undo_to_today"] is True
+    assert all(t["id"] != task_id for t in after_complete["today"])
+
+    restored = client.post(
+        f"/api/completions/{history_item['id']}/undo-to-today"
+    )
+    assert restored.status_code == 200
+
+    after_restore = get_state(client)
+    assert [t["id"] for t in after_restore["today"]] == original_today_order
+    assert all(h["id"] != history_item["id"] for h in after_restore["history"])
+    restored_task = task_from_state(after_restore, task_id)
+    assert restored_task["active"] is True
+    assert restored_task["next_due"] == original_task["next_due"]
+    assert restored_task["need_score"] == original_task["need_score"]
+
+
+def test_one_off_completion_rollback_reactivates_task(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Puntual reversible",
+            recurrence_type="none",
+            frequency_days=None,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+    assert client.post(f"/api/today/{task_id}").status_code == 200
+
+    state = get_state(client)
+    person_id = state["people"][0]["id"]
+    assert client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    ).status_code == 200
+
+    completed_state = get_state(client)
+    completed_task = task_from_state(completed_state, task_id)
+    assert completed_task["active"] is False
+    history_item = next(
+        h for h in completed_state["history"] if h["task_id"] == task_id
+    )
+    assert history_item["can_undo_to_today"] is True
+
+    undone = client.post(
+        f"/api/completions/{history_item['id']}/undo-to-today"
+    )
+    assert undone.status_code == 200
+
+    restored = get_state(client)
+    task = task_from_state(restored, task_id)
+    assert task["active"] is True
+    assert any(t["id"] == task_id for t in restored["today"])
+
+
+def test_only_latest_completion_of_same_task_can_roll_back(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Dos realizaciones",
+            recurrence_type="cycle",
+            frequency_days=1,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+    person_id = get_state(client)["people"][0]["id"]
+
+    completion_ids = []
+    for _ in range(2):
+        assert client.post(f"/api/today/{task_id}").status_code == 200
+        assert client.post(
+            f"/api/tasks/{task_id}/complete",
+            json={"person_id": person_id},
+        ).status_code == 200
+        completion_ids.append(
+            next(
+                h["id"]
+                for h in get_state(client)["history"]
+                if h["task_id"] == task_id
+            )
+        )
+
+    state = get_state(client)
+    task_history = [h for h in state["history"] if h["task_id"] == task_id]
+    assert task_history[0]["id"] == completion_ids[1]
+    assert task_history[0]["can_undo_to_today"] is True
+    assert task_history[1]["id"] == completion_ids[0]
+    assert task_history[1]["can_undo_to_today"] is False
+
+    blocked = client.post(
+        f"/api/completions/{completion_ids[0]}/undo-to-today"
+    )
+    assert blocked.status_code == 409
+
+    newest = client.post(
+        f"/api/completions/{completion_ids[1]}/undo-to-today"
+    )
+    assert newest.status_code == 200
+
+    after = get_state(client)
+    older = next(h for h in after["history"] if h["id"] == completion_ids[0])
+    assert older["can_undo_to_today"] is True
+
+
+def test_completion_not_originating_in_today_is_not_drag_reversible(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Hecha fuera de Hoy",
+            recurrence_type="cycle",
+            frequency_days=7,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+    person_id = get_state(client)["people"][0]["id"]
+
+    completed = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    )
+    assert completed.status_code == 200
+
+    state = get_state(client)
+    history_item = next(
+        h for h in state["history"] if h["task_id"] == task_id
+    )
+    assert history_item["can_undo_to_today"] is False
+
+    blocked = client.post(
+        f"/api/completions/{history_item['id']}/undo-to-today"
+    )
+    assert blocked.status_code == 409
