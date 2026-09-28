@@ -27,7 +27,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_POLL_SECONDS = max(30, int(os.getenv("TELEGRAM_POLL_SECONDS", "60") or "60"))
 TELEGRAM_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="0.7.0")
+app = FastAPI(title="Casa Tareas", version="0.8.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -98,6 +98,7 @@ def init_db():
           task_type TEXT NOT NULL DEFAULT 'execution',
           definition_of_done TEXT NOT NULL DEFAULT '',
           responsibility_notes TEXT NOT NULL DEFAULT '',
+          estimated_minutes INTEGER,
           active INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
           FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
@@ -194,6 +195,7 @@ def init_db():
         ensure_column(conn, "tasks", "task_type", "TEXT NOT NULL DEFAULT 'execution'")
         ensure_column(conn, "tasks", "definition_of_done", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "tasks", "responsibility_notes", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "tasks", "estimated_minutes", "INTEGER")
 
         if conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
             conn.executemany(
@@ -407,6 +409,57 @@ def latest_undo(conn):
         (cutoff,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def task_need(conn, task):
+    if not task["active"] or task["recurrence_type"] == "none":
+        return None
+
+    freq = task["frequency_days"]
+    if not freq or freq < 1:
+        return None
+
+    due = due_date(conn, task)
+    if not due:
+        return None
+
+    override = conn.execute(
+        """SELECT due_date FROM schedule_overrides
+           WHERE task_id=? AND consumed_at IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (task["id"],),
+    ).fetchone()
+
+    last = last_completion(conn, task["id"])
+    last_day = (
+        datetime.fromisoformat(last["completed_at"]).astimezone(TZ).date()
+        if last
+        else None
+    )
+
+    if override or task["recurrence_type"] == "fixed" or not last_day:
+        cycle_start = due - timedelta(days=freq)
+    else:
+        cycle_start = last_day
+
+    elapsed = (today_local() - cycle_start).days
+    score = round((elapsed / freq) * 100)
+    score = max(0, min(200, score))
+
+    if score < 40:
+        label = "Puede esperar"
+    elif score < 70:
+        label = "Pronto"
+    elif score < 100:
+        label = "Conviene hacer"
+    else:
+        label = "Pendiente"
+
+    return {
+        "score": score,
+        "label": label,
+        "suggested": score >= 70,
+    }
 
 
 def area_json(conn, area):
@@ -1430,6 +1483,10 @@ def task_json(conn, task):
     d["active"] = bool(d["active"])
     due = due_date(conn, task)
     d["next_due"] = due.isoformat() if due else None
+    need = task_need(conn, task)
+    d["need_score"] = need["score"] if need else None
+    d["need_label"] = need["label"] if need else None
+    d["is_suggested"] = bool(need and need["suggested"])
 
     area = None
     if d.get("area_id"):
@@ -1498,6 +1555,7 @@ class TaskIn(BaseModel):
     task_type: str = "execution"
     definition_of_done: str = ""
     responsibility_notes: str = ""
+    estimated_minutes: int | None = Field(default=None, ge=1, le=1440)
 
 
 class AreaIn(BaseModel):
@@ -1570,7 +1628,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.7.0"}
+    return {"ok": True, "version": "0.8.0"}
 
 
 @app.get("/api/state")
@@ -1622,6 +1680,20 @@ def state():
         by_id = {t["id"]: t for t in tasks}
         today = [by_id[i] for i in today_ids if i in by_id and by_id[i]["active"]]
         today_set = set(today_ids)
+        suggested = sorted(
+            [
+                t
+                for t in tasks
+                if t["active"]
+                and t["is_suggested"]
+                and t["id"] not in today_set
+            ],
+            key=lambda t: (
+                -(t["need_score"] or 0),
+                t["estimated_minutes"] if t["estimated_minutes"] is not None else 99999,
+                t["title"].lower(),
+            ),
+        )
         upcoming = sorted(
             [
                 t
@@ -1659,6 +1731,7 @@ def state():
             "areas": areas,
             "areas_all": areas_all,
             "today": today,
+            "suggested": suggested,
             "upcoming": upcoming,
             "tasks": tasks,
             "events": events,
@@ -1843,8 +1916,9 @@ def create_task(payload: TaskIn):
         cur = conn.execute(
             """INSERT INTO tasks(title,description,category,color,icon,recurrence_type,
                frequency_days,initial_due_date,anchor_date,area_id,owner_person_id,
-               task_type,definition_of_done,responsibility_notes,active,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+               task_type,definition_of_done,responsibility_notes,estimated_minutes,
+               active,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (
                 payload.title.strip(),
                 payload.description.strip(),
@@ -1860,6 +1934,7 @@ def create_task(payload: TaskIn):
                 payload.task_type,
                 payload.definition_of_done.strip(),
                 payload.responsibility_notes.strip(),
+                payload.estimated_minutes,
                 iso_now(),
             ),
         )
@@ -1881,7 +1956,7 @@ def update_task(task_id: int, payload: TaskIn):
             """UPDATE tasks SET title=?,description=?,category=?,color=?,icon=?,
                recurrence_type=?,frequency_days=?,initial_due_date=?,anchor_date=?,
                area_id=?,owner_person_id=?,task_type=?,definition_of_done=?,
-               responsibility_notes=? WHERE id=?""",
+               responsibility_notes=?,estimated_minutes=? WHERE id=?""",
             (
                 payload.title.strip(),
                 payload.description.strip(),
@@ -1897,6 +1972,7 @@ def update_task(task_id: int, payload: TaskIn):
                 payload.task_type,
                 payload.definition_of_done.strip(),
                 payload.responsibility_notes.strip(),
+                payload.estimated_minutes,
                 task_id,
             ),
         )
