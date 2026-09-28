@@ -595,6 +595,322 @@ def delete_meta(conn, key):
     conn.execute("DELETE FROM app_meta WHERE key=?", (key,))
 
 
+def parse_pause_date(value, field_name="Fecha de regreso"):
+    try:
+        parsed = date.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{field_name} no válida")
+    return parsed
+
+
+def validate_pause_payload(return_date, resume_mode):
+    target = parse_pause_date(return_date)
+    if target <= today_local():
+        raise HTTPException(400, "La fecha de regreso debe ser posterior a hoy")
+    if resume_mode not in {"continue_cycle", "keep_calendar"}:
+        raise HTTPException(400, "Modo de reanudación no válido")
+    return target
+
+
+def get_vacation(conn):
+    raw = get_meta(conn, "vacation_state")
+    if not raw:
+        return {
+            "active": False,
+            "started_on": None,
+            "return_date": None,
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [],
+        }
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        delete_meta(conn, "vacation_state")
+        return {
+            "active": False,
+            "started_on": None,
+            "return_date": None,
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [],
+        }
+
+    try:
+        return_date = date.fromisoformat(data["return_date"])
+        active = today_local() < return_date
+    except (KeyError, TypeError, ValueError):
+        active = False
+    data["active"] = active
+    data.setdefault("excluded_area_ids", [])
+    data.setdefault("resume_mode", "continue_cycle")
+    return data
+
+
+def row_pause_active(row):
+    until = row["paused_until"] if "paused_until" in row.keys() else None
+    if not until:
+        return False
+    try:
+        return today_local() < date.fromisoformat(until)
+    except ValueError:
+        return False
+
+
+def effective_task_pause(conn, task):
+    if row_pause_active(task):
+        return {
+            "source": "task",
+            "return_date": task["paused_until"],
+            "resume_mode": task["pause_resume_mode"] or "continue_cycle",
+        }
+
+    area = None
+    if task["area_id"]:
+        area = conn.execute("SELECT * FROM areas WHERE id=?", (task["area_id"],)).fetchone()
+        if area and row_pause_active(area):
+            return {
+                "source": "area",
+                "area_id": area["id"],
+                "area_name": area["name"],
+                "return_date": area["paused_until"],
+                "resume_mode": area["pause_resume_mode"] or "continue_cycle",
+            }
+
+    vacation = get_vacation(conn)
+    excluded = {int(x) for x in vacation.get("excluded_area_ids", [])}
+    if vacation["active"] and task["area_id"] not in excluded:
+        return {
+            "source": "vacation",
+            "return_date": vacation["return_date"],
+            "resume_mode": vacation["resume_mode"],
+        }
+    return None
+
+
+def effective_area_pause(conn, area):
+    if row_pause_active(area):
+        return {
+            "source": "area",
+            "return_date": area["paused_until"],
+            "resume_mode": area["pause_resume_mode"] or "continue_cycle",
+        }
+    vacation = get_vacation(conn)
+    excluded = {int(x) for x in vacation.get("excluded_area_ids", [])}
+    if vacation["active"] and area["id"] not in excluded:
+        return {
+            "source": "vacation",
+            "return_date": vacation["return_date"],
+            "resume_mode": vacation["resume_mode"],
+        }
+    return None
+
+
+def pause_shift_days(task, started_on, ended_on):
+    start = date.fromisoformat(started_on)
+    end = date.fromisoformat(ended_on)
+    created = date.fromisoformat(task["created_at"][:10])
+    effective_start = max(start, created)
+    return max(0, (end - effective_start).days)
+
+
+def shift_task_schedule_after_pause(conn, task, started_on, ended_on):
+    if not task["active"]:
+        return
+    days = pause_shift_days(task, started_on, ended_on)
+    if days <= 0:
+        return
+
+    current_due = due_date(conn, task)
+    active_override = conn.execute(
+        """SELECT * FROM schedule_overrides
+           WHERE task_id=? AND consumed_at IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (task["id"],),
+    ).fetchone()
+
+    if task["recurrence_type"] == "fixed":
+        updates = []
+        params = []
+        for field in ("initial_due_date", "anchor_date"):
+            value = task[field]
+            if value:
+                updates.append(f"{field}=?")
+                params.append((date.fromisoformat(value) + timedelta(days=days)).isoformat())
+        if updates:
+            params.append(task["id"])
+            conn.execute(
+                f"UPDATE tasks SET {','.join(updates)} WHERE id=?",
+                tuple(params),
+            )
+        if active_override and current_due:
+            conn.execute(
+                "UPDATE schedule_overrides SET due_date=? WHERE id=?",
+                ((current_due + timedelta(days=days)).isoformat(), active_override["id"]),
+            )
+        return
+
+    if current_due:
+        shifted = (current_due + timedelta(days=days)).isoformat()
+        if active_override:
+            conn.execute(
+                "UPDATE schedule_overrides SET due_date=? WHERE id=?",
+                (shifted, active_override["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO schedule_overrides(task_id,due_date,created_at) VALUES(?,?,?)",
+                (task["id"], shifted, iso_now()),
+            )
+
+
+def finish_task_pause(conn, task_id, ended_on=None):
+    task = task_row(conn, task_id)
+    if not task["paused_until"] or not task["pause_started_on"]:
+        return False
+    end = ended_on or today_local().isoformat()
+    if (task["pause_resume_mode"] or "continue_cycle") == "continue_cycle":
+        shift_task_schedule_after_pause(conn, task, task["pause_started_on"], end)
+    conn.execute(
+        """UPDATE tasks SET pause_started_on=NULL,paused_until=NULL,
+           pause_resume_mode=NULL WHERE id=?""",
+        (task_id,),
+    )
+    return True
+
+
+def finish_area_pause(conn, area_id, ended_on=None):
+    area = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+    if not area or not area["paused_until"] or not area["pause_started_on"]:
+        return False
+    end = ended_on or today_local().isoformat()
+    if (area["pause_resume_mode"] or "continue_cycle") == "continue_cycle":
+        tasks = conn.execute(
+            "SELECT * FROM tasks WHERE area_id=? AND active=1",
+            (area_id,),
+        ).fetchall()
+        for task in tasks:
+            shift_task_schedule_after_pause(conn, task, area["pause_started_on"], end)
+    conn.execute(
+        """UPDATE areas SET pause_started_on=NULL,paused_until=NULL,
+           pause_resume_mode=NULL WHERE id=?""",
+        (area_id,),
+    )
+    return True
+
+
+def finish_vacation(conn, ended_on=None):
+    vacation = get_vacation(conn)
+    raw = get_meta(conn, "vacation_state")
+    if not raw:
+        return False
+
+    end = ended_on or today_local().isoformat()
+    if vacation.get("resume_mode") == "continue_cycle":
+        excluded = {int(x) for x in vacation.get("excluded_area_ids", [])}
+        tasks = conn.execute("SELECT * FROM tasks WHERE active=1").fetchall()
+        for task in tasks:
+            if task["area_id"] in excluded:
+                continue
+            shift_task_schedule_after_pause(
+                conn,
+                task,
+                vacation["started_on"],
+                end,
+            )
+    delete_meta(conn, "vacation_state")
+    return True
+
+
+def sync_pause_states(conn):
+    today = today_local()
+
+    expired_tasks = conn.execute(
+        """SELECT id,paused_until FROM tasks
+           WHERE paused_until IS NOT NULL"""
+    ).fetchall()
+    for row in expired_tasks:
+        try:
+            if today >= date.fromisoformat(row["paused_until"]):
+                finish_task_pause(conn, row["id"], row["paused_until"])
+        except ValueError:
+            finish_task_pause(conn, row["id"], today.isoformat())
+
+    expired_areas = conn.execute(
+        """SELECT id,paused_until FROM areas
+           WHERE paused_until IS NOT NULL"""
+    ).fetchall()
+    for row in expired_areas:
+        try:
+            if today >= date.fromisoformat(row["paused_until"]):
+                finish_area_pause(conn, row["id"], row["paused_until"])
+        except ValueError:
+            finish_area_pause(conn, row["id"], today.isoformat())
+
+    vacation = get_vacation(conn)
+    if get_meta(conn, "vacation_state") and not vacation["active"]:
+        finish_vacation(conn, vacation.get("return_date") or today.isoformat())
+
+
+def assert_task_not_paused(conn, task):
+    pause = effective_task_pause(conn, task)
+    if pause:
+        raise HTTPException(
+            409,
+            f'La tarea está pausada hasta {pause["return_date"]}',
+        )
+
+
+def assert_no_pause_overlap_for_task(conn, task):
+    if effective_task_pause(conn, task):
+        raise HTTPException(409, "La tarea ya está afectada por otra pausa")
+
+
+def assert_area_can_pause(conn, area):
+    if effective_area_pause(conn, area):
+        raise HTTPException(409, "El área ya está afectada por otra pausa")
+    task_pause = conn.execute(
+        """SELECT id FROM tasks
+           WHERE area_id=? AND active=1 AND paused_until IS NOT NULL
+             AND paused_until>? LIMIT 1""",
+        (area["id"], today_local().isoformat()),
+    ).fetchone()
+    if task_pause:
+        raise HTTPException(
+            409,
+            "Hay tareas del área con una pausa individual activa; reanúdalas primero",
+        )
+
+
+def assert_vacation_can_start(conn, excluded_area_ids):
+    vacation = get_vacation(conn)
+    if vacation["active"]:
+        raise HTTPException(409, "El modo vacaciones ya está activo")
+
+    excluded = {int(x) for x in excluded_area_ids}
+    active_area_pauses = conn.execute(
+        """SELECT id FROM areas
+           WHERE active=1 AND paused_until IS NOT NULL AND paused_until>?""",
+        (today_local().isoformat(),),
+    ).fetchall()
+    for area in active_area_pauses:
+        if area["id"] not in excluded:
+            raise HTTPException(
+                409,
+                "Hay áreas con una pausa activa; reanúdalas o exclúyelas de vacaciones",
+            )
+
+    active_task_pauses = conn.execute(
+        """SELECT area_id FROM tasks
+           WHERE active=1 AND paused_until IS NOT NULL AND paused_until>?""",
+        (today_local().isoformat(),),
+    ).fetchall()
+    for task in active_task_pauses:
+        if task["area_id"] not in excluded:
+            raise HTTPException(
+                409,
+                "Hay tareas con una pausa individual activa; reanúdalas o excluye su área",
+            )
+
+
 def telegram_status(conn):
     chat_id = get_meta(conn, "telegram_chat_id")
     return {
