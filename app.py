@@ -3057,6 +3057,18 @@ def move_task_area(task_id: int, payload: AreaMoveIn):
             {"task_id": task_id, "previous_area_id": previous_area_id},
             f'Movida de área "{task["title"]}"',
         )
+        destination = (
+            conn.execute("SELECT name FROM areas WHERE id=?", (payload.area_id,)).fetchone()
+            if payload.area_id
+            else None
+        )
+        log_activity(
+            conn,
+            "task_moved",
+            f'Movida "{task["title"]}" a {destination["name"] if destination else "Sin área"}',
+            entity_type="task",
+            entity_id=task_id,
+        )
         return {"ok": True, "undo_id": undo_id}
 
 
@@ -3210,6 +3222,13 @@ def postpone_task_action(conn, task_id, due_date_value):
         },
         f'Pospuesta "{task["title"]}"',
     )
+    log_activity(
+        conn,
+        "task_postponed",
+        f'Pospuesta "{task["title"]}" al {due_date_value}',
+        entity_type="task",
+        entity_id=task_id,
+    )
     return {"ok": True, "undo_id": undo_id, "task_title": task["title"]}
 
 
@@ -3261,6 +3280,13 @@ def complete_task_action(conn, task_id, person_id):
             "queue": queue_snapshot(queue),
         },
         f'Completada "{task["title"]}" por {person["name"]}',
+    )
+    log_activity(
+        conn,
+        "task_completed",
+        f'{person["name"]} completó "{task["title"]}"',
+        entity_type="task",
+        entity_id=task_id,
     )
     return {
         "ok": True,
