@@ -2426,9 +2426,11 @@ def reorder_today(payload: ReorderIn):
 @app.post("/api/today/{task_id}")
 def add_today(task_id: int):
     with db() as conn:
+        sync_pause_states(conn)
         task = task_row(conn, task_id)
         if not task["active"]:
             raise HTTPException(400, "La tarea está archivada")
+        assert_task_not_paused(conn, task)
         existing = conn.execute(
             "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
         ).fetchone()
@@ -2455,6 +2457,7 @@ def add_today(task_id: int):
 
 
 def postpone_task_action(conn, task_id, due_date_value):
+    sync_pause_states(conn)
     try:
         date.fromisoformat(due_date_value)
     except ValueError:
@@ -2463,6 +2466,7 @@ def postpone_task_action(conn, task_id, due_date_value):
     task = task_row(conn, task_id)
     if not task["active"]:
         raise HTTPException(400, "La tarea está archivada")
+    assert_task_not_paused(conn, task)
     queue = conn.execute(
         "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
     ).fetchone()
@@ -2500,9 +2504,11 @@ def postpone_task_action(conn, task_id, due_date_value):
 
 
 def complete_task_action(conn, task_id, person_id):
+    sync_pause_states(conn)
     task = task_row(conn, task_id)
     if not task["active"]:
         raise HTTPException(400, "La tarea está archivada")
+    assert_task_not_paused(conn, task)
     person = conn.execute(
         "SELECT * FROM people WHERE id=? AND active=1", (person_id,)
     ).fetchone()
