@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -129,6 +130,20 @@ def init_db():
           PRIMARY KEY(event_id, reminder_minutes, channel),
           FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS telegram_chats_seen(
+          chat_id INTEGER PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          chat_type TEXT NOT NULL DEFAULT 'unknown',
+          last_seen_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS telegram_pending_actions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          action_type TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          chat_id INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          used_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS completions(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           task_id INTEGER NOT NULL,
@@ -168,6 +183,8 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_events_at ON events(active, event_at);
         CREATE INDEX IF NOT EXISTS idx_notification_deliveries
           ON notification_deliveries(channel, event_id, reminder_minutes);
+        CREATE INDEX IF NOT EXISTS idx_telegram_pending_open
+          ON telegram_pending_actions(used_at, id DESC);
         CREATE INDEX IF NOT EXISTS idx_undo_open ON undo_actions(undone_at, id DESC);
         """)
 
