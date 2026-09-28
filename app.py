@@ -1,33 +1,46 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
+import socket
 import sqlite3
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from icalendar import Calendar
+import recurring_ical_events
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", BASE_DIR / "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "chores.db"
+ATTACHMENTS_DIR = DATA_DIR / "attachments"
+ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_ATTACHMENT_BYTES = max(
+    1024 * 1024,
+    int(os.getenv("MAX_ATTACHMENT_BYTES", str(20 * 1024 * 1024)) or str(20 * 1024 * 1024)),
+)
 TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Zurich"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_POLL_SECONDS = max(30, int(os.getenv("TELEGRAM_POLL_SECONDS", "60") or "60"))
+ICAL_SYNC_MINUTES = max(5, int(os.getenv("ICAL_SYNC_MINUTES", "30") or "30"))
 TELEGRAM_TASK = None
+CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="0.9.0")
+app = FastAPI(title="Casa Tareas", version="1.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
