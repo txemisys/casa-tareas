@@ -289,3 +289,111 @@ def test_task_create_edit_archive_and_undo(client):
     undo = client.post(f"/api/undo/{archived.json()['undo_id']}")
     assert undo.status_code == 200
     assert task_from_state(get_state(client), task_id)["active"] is True
+
+
+def test_area_owner_is_inherited_and_task_can_override_it(client):
+    state = get_state(client)
+    owner = state["people"][0]
+    override_owner = state["people"][1]
+
+    area_response = client.post(
+        "/api/areas",
+        json={
+            "name": "Administración doméstica",
+            "description": "Pagos, citas y documentación.",
+            "color": "#e7eefb",
+            "icon": "📋",
+            "owner_person_id": owner["id"],
+        },
+    )
+    assert area_response.status_code == 200
+    area_id = area_response.json()["id"]
+
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Revisar facturas",
+            area_id=area_id,
+            task_type="management",
+            definition_of_done="Facturas revisadas y pagos programados.",
+            responsibility_notes="Incluye detectar pagos próximos.",
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    task = task_from_state(get_state(client), task_id)
+    assert task["area"]["id"] == area_id
+    assert task["task_type"] == "management"
+    assert task["definition_of_done"] == "Facturas revisadas y pagos programados."
+    assert task["effective_owner"]["id"] == owner["id"]
+    assert task["responsibility_source"] == "area"
+
+    override_payload = task_payload(
+        title="Revisar facturas",
+        area_id=area_id,
+        owner_person_id=override_owner["id"],
+        task_type="management",
+        definition_of_done="Facturas revisadas y pagos programados.",
+        responsibility_notes="Incluye detectar pagos próximos.",
+    )
+    updated = client.put(f"/api/tasks/{task_id}", json=override_payload)
+    assert updated.status_code == 200
+
+    overridden = task_from_state(get_state(client), task_id)
+    assert overridden["effective_owner"]["id"] == override_owner["id"]
+    assert overridden["responsibility_source"] == "task"
+
+
+def test_area_archive_and_undo_preserve_task(client):
+    state = get_state(client)
+    owner = state["people"][0]
+    area_response = client.post(
+        "/api/areas",
+        json={
+            "name": "Mascotas",
+            "description": "Cuidados y suministros.",
+            "color": "#f7dde4",
+            "icon": "🐾",
+            "owner_person_id": owner["id"],
+        },
+    )
+    assert area_response.status_code == 200
+    area_id = area_response.json()["id"]
+
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(title="Revisar pienso", area_id=area_id),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    archived = client.delete(f"/api/areas/{area_id}")
+    assert archived.status_code == 200
+    undo_id = archived.json()["undo_id"]
+
+    after = get_state(client)
+    area = next(a for a in after["areas_all"] if a["id"] == area_id)
+    assert area["active"] is False
+    task = task_from_state(after, task_id)
+    assert task["area"]["id"] == area_id
+    assert task["effective_owner"] is None
+
+    undone = client.post(f"/api/undo/{undo_id}")
+    assert undone.status_code == 200
+    restored = get_state(client)
+    area = next(a for a in restored["areas"] if a["id"] == area_id)
+    assert area["active"] is True
+    assert task_from_state(restored, task_id)["effective_owner"]["id"] == owner["id"]
+
+
+def test_task_rejects_invalid_area_owner_and_type(client):
+    state = get_state(client)
+    payload = task_payload(area_id=999999)
+    assert client.post("/api/tasks", json=payload).status_code == 400
+
+    payload = task_payload(owner_person_id=999999)
+    assert client.post("/api/tasks", json=payload).status_code == 400
+
+    payload = task_payload(task_type="unknown")
+    assert client.post("/api/tasks", json=payload).status_code == 400
