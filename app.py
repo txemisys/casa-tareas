@@ -2507,21 +2507,8 @@ def process_telegram_updates(timeout=20):
     return processed
 
 
-def ensure_telegram_bot_identity(token=None):
-    info = telegram_api_request("getMe", token=token)
-    bot_id = str(info.get("id"))
-    username = info.get("username", "")
-    with db() as conn:
-        previous = get_meta(conn, "telegram_bot_id")
-        if previous and previous != bot_id:
-            delete_meta(conn, "telegram_update_offset")
-            conn.execute("DELETE FROM telegram_chats_seen")
-            delete_meta(conn, "telegram_chat_id")
-            delete_meta(conn, "telegram_chat_title")
-        set_meta(conn, "telegram_bot_id", bot_id)
-        set_meta(conn, "telegram_bot_username", username)
-
-    commands = [
+def telegram_command_definitions():
+    return [
         {"command": "hoy", "description": "Tareas y eventos de hoy"},
         {"command": "agenda", "description": "Próximos eventos"},
         {"command": "pendientes", "description": "Tareas activas"},
@@ -2536,11 +2523,44 @@ def ensure_telegram_bot_identity(token=None):
         {"command": "deshacer", "description": "Deshacer el último cambio del bot"},
         {"command": "ayuda", "description": "Ver ejemplos de comandos"},
     ]
+
+
+def clear_telegram_runtime_state(conn, clear_seen=True):
+    for key in (
+        "telegram_update_offset",
+        "telegram_chat_id",
+        "telegram_chat_title",
+        "telegram_bot_id",
+        "telegram_bot_username",
+        "telegram_last_contact_at",
+        "telegram_last_undo_id",
+    ):
+        delete_meta(conn, key)
+    if clear_seen:
+        conn.execute("DELETE FROM telegram_chats_seen")
+    conn.execute("DELETE FROM telegram_pending_actions")
+
+
+def apply_telegram_identity(conn, info):
+    bot_id = str(info.get("id"))
+    username = info.get("username", "")
+    previous = get_meta(conn, "telegram_bot_id")
+    if previous and previous != bot_id:
+        clear_telegram_runtime_state(conn, clear_seen=True)
+    set_meta(conn, "telegram_bot_id", bot_id)
+    set_meta(conn, "telegram_bot_username", username)
+    set_meta(conn, "telegram_last_contact_at", iso_now())
+
+
+def ensure_telegram_bot_identity(token=None):
+    info = telegram_api_request("getMe", token=token)
     telegram_api_request(
         "setMyCommands",
-        {"commands": json.dumps(commands, ensure_ascii=False)},
+        {"commands": json.dumps(telegram_command_definitions(), ensure_ascii=False)},
         token=token,
     )
+    with db() as conn:
+        apply_telegram_identity(conn, info)
     return info
 
 
@@ -2578,6 +2598,25 @@ async def telegram_reminder_loop():
         except Exception as exc:
             print(f"Telegram worker error: {exc}", flush=True)
             await asyncio.sleep(5)
+
+
+async def restart_telegram_worker():
+    global TELEGRAM_TASK
+    if TELEGRAM_TASK:
+        await stop_telegram_worker()
+    if telegram_bot_token():
+        TELEGRAM_TASK = asyncio.create_task(telegram_reminder_loop())
+
+
+async def stop_telegram_worker():
+    global TELEGRAM_TASK
+    if TELEGRAM_TASK:
+        TELEGRAM_TASK.cancel()
+        try:
+            await TELEGRAM_TASK
+        except asyncio.CancelledError:
+            pass
+        TELEGRAM_TASK = None
 
 
 def task_json(conn, task):
@@ -2697,6 +2736,17 @@ class TelegramChatIn(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
+class TelegramTokenIn(BaseModel):
+    token: str = Field(min_length=20, max_length=250)
+
+
+class RuntimeSettingsIn(BaseModel):
+    timezone: str = Field(min_length=1, max_length=100)
+    telegram_poll_seconds: int = Field(ge=30, le=3600)
+    ical_sync_minutes: int = Field(ge=5, le=1440)
+    max_attachment_mb: int = Field(ge=1, le=500)
+
+
 class InventoryItemIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     category: str = Field(default="General", max_length=80)
@@ -2751,8 +2801,10 @@ async def startup():
     global TELEGRAM_TASK, CALENDAR_TASK
     init_db()
     with db() as conn:
+        load_runtime_settings(conn)
         sync_pause_states(conn)
-    if TELEGRAM_BOT_TOKEN:
+        token_configured = bool(telegram_bot_token(conn))
+    if token_configured:
         TELEGRAM_TASK = asyncio.create_task(telegram_reminder_loop())
     CALENDAR_TASK = asyncio.create_task(calendar_sync_loop())
 
@@ -2978,8 +3030,8 @@ def get_telegram_status():
 
 @app.post("/api/telegram/chats")
 def detect_telegram_chats():
-    if not TELEGRAM_BOT_TOKEN:
-        raise HTTPException(400, "Configura TELEGRAM_BOT_TOKEN y reinicia el contenedor")
+    if not telegram_bot_token():
+        raise HTTPException(400, "Configura primero el bot en Configuración → Telegram")
     try:
         return {"chats": telegram_detect_chats()}
     except RuntimeError as exc:
@@ -2988,8 +3040,8 @@ def detect_telegram_chats():
 
 @app.put("/api/telegram/chat")
 def configure_telegram_chat(payload: TelegramChatIn):
-    if not TELEGRAM_BOT_TOKEN:
-        raise HTTPException(400, "Configura TELEGRAM_BOT_TOKEN y reinicia el contenedor")
+    if not telegram_bot_token():
+        raise HTTPException(400, "Configura primero el bot en Configuración → Telegram")
     try:
         chat = telegram_api_request("getChat", {"chat_id": str(payload.chat_id)})
     except RuntimeError as exc:
@@ -3018,8 +3070,8 @@ def disconnect_telegram_chat():
 
 @app.post("/api/telegram/test")
 def test_telegram():
-    if not TELEGRAM_BOT_TOKEN:
-        raise HTTPException(400, "Configura TELEGRAM_BOT_TOKEN y reinicia el contenedor")
+    if not telegram_bot_token():
+        raise HTTPException(400, "Configura primero el bot en Configuración → Telegram")
     with db() as conn:
         chat_id = get_meta(conn, "telegram_chat_id")
         title = get_meta(conn, "telegram_chat_title", "")
