@@ -9,6 +9,8 @@ services:
       - "${APP_PORT:-3000}:8000"
     environment:
       APP_TIMEZONE: "${APP_TIMEZONE:-Europe/Zurich}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_POLL_SECONDS: "${TELEGRAM_POLL_SECONDS:-60}"
     volumes:
       - ./data:/app/data
     healthcheck:
