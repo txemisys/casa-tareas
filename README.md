@@ -175,6 +175,66 @@ Desde **Tareas** se puede pausar una tarea individual. Desde **Áreas** se puede
 
 Para evitar dobles desplazamientos de fechas, Casa Tareas no permite superponer dos pausas sobre la misma tarea. Una pausa individual o de área puede coexistir con el modo vacaciones únicamente cuando su área está excluida de la pausa global.
 
+## Novedades, documentos, calendarios e inventario
+
+### Desde tu última visita
+
+El Tablero incluye un bloque de **Novedades** con cambios recientes: tareas creadas, modificadas, movidas, pospuestas o completadas, cambios en Áreas, eventos, inventario, documentos, calendarios y modo vacaciones.
+
+El punto de lectura se guarda en el navegador. Por tanto, cada móvil, tablet u ordenador conserva su propio "visto hasta aquí", sin necesitar cuentas individuales.
+
+### Documentos y adjuntos
+
+Las **Tareas** y las **Áreas** pueden guardar documentos relacionados: contratos, facturas, garantías, manuales, actas, imágenes o PDF.
+
+Los archivos se guardan dentro de `data/attachments` con un nombre interno aleatorio; la interfaz conserva y muestra el nombre original. El tamaño máximo predeterminado es 20 MiB por archivo y puede cambiarse con `MAX_ATTACHMENT_BYTES`.
+
+Una copia de seguridad de la carpeta `data` debe incluir tanto `chores.db` como `attachments/`.
+
+Un Área con documentos asociados no se puede eliminar definitivamente hasta eliminar esos documentos. Al borrar definitivamente una tarea se eliminan también sus adjuntos.
+
+### Calendarios externos iCal
+
+En **Agenda → Calendarios externos** se pueden conectar calendarios iCal/ICS mediante una URL HTTPS, por ejemplo calendarios escolares, deportivos o de una comunidad.
+
+- Se importan en modo **solo lectura**.
+- Las recurrencias del calendario se expanden y aparecen junto a los eventos propios.
+- Cada calendario puede asociarse opcionalmente a un Área.
+- Se sincronizan automáticamente cada 30 minutos por defecto, además de poder sincronizarse manualmente.
+- Si una sincronización falla, se conserva la última copia válida y se muestra el error.
+- La URL completa no se devuelve a la interfaz, porque algunas URLs iCal contienen tokens privados.
+- Los avisos propios de Casa Tareas y Telegram siguen aplicándose a los eventos creados en Casa Tareas. Los eventos iCal importados no generan recordatorios duplicados de Casa Tareas.
+
+El intervalo automático se configura con `ICAL_SYNC_MINUTES`.
+
+### Inventario y Comprar
+
+Dentro de **Tareas → Inventario y Comprar** hay un inventario ligero pensado para consumibles domésticos.
+
+Cada producto tiene uno de tres estados:
+
+- **Hay**: disponible.
+- **Poco**: queda, pero entra automáticamente en **Comprar**.
+- **Falta**: entra en **Comprar** y las tareas que lo necesitan muestran que falta ese producto.
+
+También se puede añadir manualmente un producto a **Comprar** aunque su estado sea **Hay**. Al pulsar **Repuesto**, vuelve a **Hay** y sale de la lista.
+
+Las tareas pueden declarar varios **productos necesarios**. La lista Comprar agrega cada producto una sola vez aunque lo necesiten varias tareas, y muestra para qué tareas se necesita. No se descuenta stock automáticamente al completar una tarea: el objetivo es que mantener el inventario sea rápido, no llevar una contabilidad exacta de unidades.
+
+Desde Telegram:
+
+```text
+/comprar
+/comprar Limpiador de baño
+/stock Limpiador de baño | falta
+/stock Limpiador de baño | poco
+/stock Limpiador de baño | hay
+```
+
+### Categorías
+
+La categoría de una tarea sigue siendo libre. **Vacaciones-Viajes** aparece ahora entre las sugerencias junto con las categorías ya utilizadas.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
