@@ -2056,3 +2056,56 @@ def test_ical_sync_failure_keeps_last_valid_cache(client, monkeypatch):
         x for x in state["calendar_subscriptions"] if x["id"] == subscription_id
     )
     assert "fallo de red" in sub["last_error"]
+
+
+def test_telegram_inventory_commands(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    sent = []
+
+    def fake_telegram(method, payload=None):
+        if method == "sendMessage":
+            sent.append(dict(payload or {}))
+            return {"message_id": len(sent)}
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+    chat_id = -100565656565
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", chat_id)
+
+    item = client.post(
+        "/api/inventory",
+        json={
+            "name": "Detergente",
+            "category": "Limpieza",
+            "area_id": None,
+            "unit": "botella",
+            "purchase_quantity": "1 botella",
+            "stock_status": "ok",
+            "shopping_requested": False,
+            "notes": "",
+        },
+    )
+    assert item.status_code == 200
+
+    app_module.telegram_handle_command(chat_id, "/stock Detergente | falta")
+    state = get_state(client)
+    stored = next(x for x in state["inventory"] if x["name"] == "Detergente")
+    assert stored["stock_status"] == "out"
+
+    app_module.telegram_handle_command(chat_id, "/comprar")
+    assert any("Detergente" in m.get("text", "") for m in sent)
+
+    app_module.telegram_handle_command(chat_id, "/stock Detergente | hay")
+    assert all(
+        x["name"] != "Detergente"
+        for x in get_state(client)["shopping_list"]
+    )
+
+    app_module.telegram_handle_command(chat_id, "/comprar Detergente")
+    assert any(
+        x["name"] == "Detergente"
+        for x in get_state(client)["shopping_list"]
+    )
