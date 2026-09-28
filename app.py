@@ -394,6 +394,10 @@ def area_json(conn, area):
         "SELECT COUNT(*) FROM tasks WHERE area_id=?",
         (d["id"],),
     ).fetchone()[0]
+    d["event_count"] = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE area_id=? AND active=1",
+        (d["id"],),
+    ).fetchone()[0]
     return d
 
 
@@ -1177,10 +1181,14 @@ def delete_area_permanently(area_id: int):
             "SELECT COUNT(*) FROM tasks WHERE area_id=?",
             (area_id,),
         ).fetchone()[0]
-        if task_count:
+        event_count = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE area_id=? AND active=1",
+            (area_id,),
+        ).fetchone()[0]
+        if task_count or event_count:
             raise HTTPException(
                 409,
-                f"El área todavía tiene {task_count} tarea(s) asociada(s). Muévelas a otra área antes de eliminarla.",
+                f"El área todavía tiene {task_count} tarea(s) y {event_count} evento(s) asociado(s). Muévelos antes de eliminarla.",
             )
 
         conn.execute("DELETE FROM areas WHERE id=?", (area_id,))
