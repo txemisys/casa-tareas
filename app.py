@@ -708,6 +708,28 @@ def effective_area_pause(conn, area):
     return None
 
 
+def pause_for_area_id(conn, area_id):
+    if area_id is not None:
+        area = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+        if area and row_pause_active(area):
+            return {
+                "source": "area",
+                "area_id": area["id"],
+                "area_name": area["name"],
+                "return_date": area["paused_until"],
+                "resume_mode": area["pause_resume_mode"] or "continue_cycle",
+            }
+    vacation = get_vacation(conn)
+    excluded = {int(x) for x in vacation.get("excluded_area_ids", [])}
+    if vacation["active"] and area_id not in excluded:
+        return {
+            "source": "vacation",
+            "return_date": vacation["return_date"],
+            "resume_mode": vacation["resume_mode"],
+        }
+    return None
+
+
 def pause_shift_days(task, started_on, ended_on):
     start = date.fromisoformat(started_on)
     end = date.fromisoformat(ended_on)
