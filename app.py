@@ -2282,6 +2282,124 @@ def acknowledge_event_reminder(event_id: int, minutes: int):
         return {"ok": True}
 
 
+@app.post("/api/vacation/start")
+def start_vacation(payload: VacationIn):
+    target = validate_pause_payload(payload.return_date, payload.resume_mode)
+    with db() as conn:
+        sync_pause_states(conn)
+        excluded = sorted({int(x) for x in payload.excluded_area_ids})
+        if excluded:
+            rows = conn.execute(
+                "SELECT id FROM areas WHERE active=1"
+            ).fetchall()
+            valid = {r["id"] for r in rows}
+            if any(area_id not in valid for area_id in excluded):
+                raise HTTPException(400, "Hay un área excluida que no existe o está archivada")
+
+        assert_vacation_can_start(conn, excluded)
+        value = {
+            "started_on": today_local().isoformat(),
+            "return_date": target.isoformat(),
+            "resume_mode": payload.resume_mode,
+            "excluded_area_ids": excluded,
+        }
+        set_meta(conn, "vacation_state", json.dumps(value))
+        return {"ok": True, "vacation": get_vacation(conn)}
+
+
+@app.post("/api/vacation/end")
+def end_vacation():
+    with db() as conn:
+        sync_pause_states(conn)
+        if not get_meta(conn, "vacation_state"):
+            return {"ok": True, "already_inactive": True}
+        finish_vacation(conn, today_local().isoformat())
+        return {"ok": True, "already_inactive": False}
+
+
+@app.post("/api/tasks/{task_id}/pause")
+def pause_task(task_id: int, payload: PauseIn):
+    target = validate_pause_payload(payload.return_date, payload.resume_mode)
+    with db() as conn:
+        sync_pause_states(conn)
+        task = task_row(conn, task_id)
+        if not task["active"]:
+            raise HTTPException(400, "La tarea está archivada")
+        assert_no_pause_overlap_for_task(conn, task)
+        conn.execute(
+            """UPDATE tasks SET pause_started_on=?,paused_until=?,
+               pause_resume_mode=? WHERE id=?""",
+            (
+                today_local().isoformat(),
+                target.isoformat(),
+                payload.resume_mode,
+                task_id,
+            ),
+        )
+        return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/resume")
+def resume_task(task_id: int):
+    with db() as conn:
+        sync_pause_states(conn)
+        task = task_row(conn, task_id)
+        if task["paused_until"]:
+            finish_task_pause(conn, task_id, today_local().isoformat())
+            return {"ok": True}
+        pause = effective_task_pause(conn, task)
+        if pause:
+            raise HTTPException(
+                409,
+                "Esta tarea está pausada por su área o por el modo vacaciones; reanuda ese ámbito",
+            )
+        return {"ok": True, "already_active": True}
+
+
+@app.post("/api/areas/{area_id}/pause")
+def pause_area(area_id: int, payload: PauseIn):
+    target = validate_pause_payload(payload.return_date, payload.resume_mode)
+    with db() as conn:
+        sync_pause_states(conn)
+        area = conn.execute(
+            "SELECT * FROM areas WHERE id=? AND active=1",
+            (area_id,),
+        ).fetchone()
+        if not area:
+            raise HTTPException(404, "Área no encontrada o archivada")
+        assert_area_can_pause(conn, area)
+        conn.execute(
+            """UPDATE areas SET pause_started_on=?,paused_until=?,
+               pause_resume_mode=? WHERE id=?""",
+            (
+                today_local().isoformat(),
+                target.isoformat(),
+                payload.resume_mode,
+                area_id,
+            ),
+        )
+        return {"ok": True}
+
+
+@app.post("/api/areas/{area_id}/resume")
+def resume_area(area_id: int):
+    with db() as conn:
+        sync_pause_states(conn)
+        area = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+        if not area:
+            raise HTTPException(404, "Área no encontrada")
+        if area["paused_until"]:
+            finish_area_pause(conn, area_id, today_local().isoformat())
+            return {"ok": True}
+        pause = effective_area_pause(conn, area)
+        if pause:
+            raise HTTPException(
+                409,
+                "Esta área está pausada por el modo vacaciones; termínalo desde el Tablero",
+            )
+        return {"ok": True, "already_active": True}
+
+
 @app.post("/api/tasks")
 def create_task(payload: TaskIn):
     if payload.recurrence_type not in {"none", "cycle", "fixed"}:
