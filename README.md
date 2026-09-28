@@ -58,6 +58,52 @@ La aplicación incluye una **Agenda** separada de las tareas para reuniones, cit
 
 Las notificaciones del navegador de esta versión no garantizan avisos con la aplicación completamente cerrada. Para eso se necesita un canal externo o push web con servicio de notificaciones.
 
+## Telegram
+
+Casa Tareas puede enviar los recordatorios de la Agenda a un chat o grupo de Telegram aunque nadie tenga abierta la web.
+
+### Activación
+
+1. Crea un bot con **@BotFather** en Telegram y guarda el token.
+2. Copia el archivo de ejemplo:
+
+```bash
+cp .env.example .env
+```
+
+En PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+3. Edita únicamente el archivo local `.env` y añade el token:
+
+```text
+TELEGRAM_BOT_TOKEN=pega_aqui_el_token
+```
+
+El archivo `.env` está excluido de Git y no debe subirse al repositorio.
+
+4. Reinicia la aplicación:
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+5. Añade el bot al grupo de Telegram donde quieras recibir los avisos.
+6. Envía un comando en el grupo, por ejemplo `/casa`.
+7. En **Agenda → Telegram**, pulsa **Detectar chats**, selecciona el grupo y después **Enviar prueba**.
+
+### Funcionamiento
+
+El contenedor revisa los recordatorios cada 60 segundos por defecto. El intervalo puede cambiarse con `TELEGRAM_POLL_SECONDS`.
+
+Los envíos realizados se registran en SQLite para evitar duplicados después de un reinicio. Si el servidor estuvo apagado y varios avisos de un mismo evento ya han vencido, Casa Tareas envía el más reciente y marca los anteriores como procesados, evitando una ráfaga de mensajes atrasados.
+
+El token del bot nunca se devuelve a la interfaz ni se almacena en SQLite; solo se lee de la variable de entorno. En SQLite se guarda únicamente el identificador y el nombre del chat seleccionado.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
