@@ -2540,6 +2540,17 @@ def state():
                 "SELECT * FROM tasks ORDER BY active DESC,category,title"
             ).fetchall()
         ]
+        inventory_all = [
+            inventory_item_json(conn, r, include_required_by=True)
+            for r in conn.execute(
+                """SELECT * FROM inventory_items
+                   ORDER BY active DESC,category COLLATE NOCASE,name COLLATE NOCASE,id"""
+            ).fetchall()
+        ]
+        inventory = [item for item in inventory_all if item["active"]]
+        shopping_list = [
+            item for item in inventory if item["needs_purchase"]
+        ]
         events = [
             event_json(conn, r)
             for r in conn.execute(
@@ -2625,6 +2636,9 @@ def state():
             "suggested": suggested,
             "upcoming": upcoming,
             "tasks": tasks,
+            "inventory": inventory,
+            "inventory_all": inventory_all,
+            "shopping_list": shopping_list,
             "events": events,
             "event_today": event_today,
             "event_upcoming": event_upcoming,
