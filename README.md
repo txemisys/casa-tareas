@@ -18,6 +18,20 @@ MVP autohospedado para gestionar tareas domésticas con una cola pequeña de **H
 - SQLite y una sola aplicación FastAPI.
 - Interfaz responsive para móvil.
 
+## Áreas y responsabilidad total
+
+La aplicación diferencia entre **quién es responsable de que algo ocurra** y **quién ejecuta la tarea esta vez**.
+
+- Las **Áreas** representan ámbitos completos del hogar, como Alimentación, Ropa y textil o Limpieza y mantenimiento.
+- Cada área puede tener una persona responsable.
+- Las tareas pueden heredar ese responsable o definir una excepción propia.
+- Cada tarea puede marcarse como **🧹 Ejecución** o **🧠 Gestión / carga mental**.
+- La ficha de tarea incluye **“Se considera terminada cuando…”** para acordar el estándar una sola vez.
+- Las notas de responsabilidad permiten describir qué incluye la concepción, planificación y cierre sin crear un árbol de subtareas.
+- Al completar una tarea se sigue preguntando **quién la hizo realmente**, independientemente de quién sea responsable del área.
+
+Las bases existentes se migran de forma aditiva al arrancar; no es necesario borrar `data/chores.db`.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
