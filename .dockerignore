@@ -1,0 +1,1 @@
+.git\n.github\n__pycache__/\n*.py[cod]\n.venv/\n.env\n.DS_Store\ndata/*\n!data/.gitkeep\n
