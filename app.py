@@ -2574,11 +2574,21 @@ def delete_task_permanently(task_id: int):
 @app.post("/api/today/reorder")
 def reorder_today(payload: ReorderIn):
     with db() as conn:
-        old_order = [
-            r["task_id"]
-            for r in conn.execute(
-                "SELECT task_id FROM today_queue ORDER BY position,task_id"
-            ).fetchall()
+        sync_pause_states(conn)
+        queue_rows = conn.execute(
+            """SELECT q.*,t.*
+               FROM today_queue q
+               JOIN tasks t ON t.id=q.task_id
+               WHERE t.active=1
+               ORDER BY q.position,q.task_id"""
+        ).fetchall()
+        visible_rows = [
+            row for row in queue_rows if not effective_task_pause(conn, row)
+        ]
+        old_order = [row["task_id"] for row in visible_rows]
+        old_positions = [
+            {"task_id": row["task_id"], "position": row["position"]}
+            for row in visible_rows
         ]
         if (
             len(payload.task_ids) != len(old_order)
@@ -2589,15 +2599,16 @@ def reorder_today(payload: ReorderIn):
         if payload.task_ids == old_order:
             return {"ok": True, "undo_id": None}
 
-        for pos, task_id in enumerate(payload.task_ids, start=1):
+        available_positions = sorted(row["position"] for row in visible_rows)
+        for position, task_id in zip(available_positions, payload.task_ids):
             conn.execute(
                 "UPDATE today_queue SET position=? WHERE task_id=?",
-                (pos, task_id),
+                (position, task_id),
             )
         undo_id = record_undo(
             conn,
             "reorder_today",
-            {"old_order": old_order},
+            {"old_order": old_order, "old_positions": old_positions},
             "Reordenada la cola de Hoy",
         )
         return {"ok": True, "undo_id": undo_id}
@@ -2982,11 +2993,18 @@ def undo(undo_id: int):
             )
 
         elif action == "reorder_today":
-            for pos, task_id in enumerate(payload["old_order"], start=1):
-                conn.execute(
-                    "UPDATE today_queue SET position=? WHERE task_id=?",
-                    (pos, task_id),
-                )
+            if payload.get("old_positions"):
+                for item in payload["old_positions"]:
+                    conn.execute(
+                        "UPDATE today_queue SET position=? WHERE task_id=?",
+                        (item["position"], item["task_id"]),
+                    )
+            else:
+                for pos, task_id in enumerate(payload["old_order"], start=1):
+                    conn.execute(
+                        "UPDATE today_queue SET position=? WHERE task_id=?",
+                        (pos, task_id),
+                    )
 
         elif action == "postpone":
             conn.execute(
