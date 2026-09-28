@@ -1146,3 +1146,215 @@ def test_telegram_event_command_creates_area_event(client, monkeypatch):
     assert event["area"]["name"] == "Piso Im Gapetsch"
     assert event["reminders"] == [1440, 120]
     assert any("12.11.2030" in m.get("text", "") for m in sent)
+
+
+def test_task_need_score_and_estimated_duration(client):
+    import app as app_module
+
+    today = app_module.today_local()
+
+    due_now = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Necesidad alta",
+            frequency_days=10,
+            initial_due_date=today.isoformat(),
+            anchor_date=today.isoformat(),
+            estimated_minutes=20,
+        ),
+    )
+    assert due_now.status_code == 200
+
+    due_soon = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Necesidad sugerida",
+            frequency_days=10,
+            initial_due_date=(today + timedelta(days=3)).isoformat(),
+            anchor_date=(today + timedelta(days=3)).isoformat(),
+            estimated_minutes=10,
+        ),
+    )
+    assert due_soon.status_code == 200
+
+    not_yet = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Necesidad próxima",
+            frequency_days=10,
+            initial_due_date=(today + timedelta(days=4)).isoformat(),
+            anchor_date=(today + timedelta(days=4)).isoformat(),
+            estimated_minutes=30,
+        ),
+    )
+    assert not_yet.status_code == 200
+
+    state = get_state(client)
+    high = task_from_state(state, due_now.json()["id"])
+    suggested = task_from_state(state, due_soon.json()["id"])
+    soon = task_from_state(state, not_yet.json()["id"])
+
+    assert high["estimated_minutes"] == 20
+    assert high["need_score"] == 100
+    assert high["need_label"] == "Pendiente"
+    assert high["is_suggested"] is True
+
+    assert suggested["need_score"] == 70
+    assert suggested["need_label"] == "Conviene hacer"
+    assert suggested["is_suggested"] is True
+
+    assert soon["need_score"] == 60
+    assert soon["need_label"] == "Pronto"
+    assert soon["is_suggested"] is False
+
+    suggested_ids = [t["id"] for t in state["suggested"]]
+    assert due_now.json()["id"] in suggested_ids
+    assert due_soon.json()["id"] in suggested_ids
+    assert not_yet.json()["id"] not in suggested_ids
+
+    # La lista prioriza mayor necesidad y usa duración como desempate secundario.
+    assert suggested_ids.index(due_now.json()["id"]) < suggested_ids.index(due_soon.json()["id"])
+
+
+def test_today_queue_removes_task_from_suggestions(client):
+    import app as app_module
+
+    today = app_module.today_local()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Sugerida pero manual",
+            frequency_days=7,
+            initial_due_date=today.isoformat(),
+            anchor_date=today.isoformat(),
+            estimated_minutes=5,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    before = get_state(client)
+    assert any(t["id"] == task_id for t in before["suggested"])
+
+    added = client.post(f"/api/today/{task_id}")
+    assert added.status_code == 200
+
+    after = get_state(client)
+    assert any(t["id"] == task_id for t in after["today"])
+    assert all(t["id"] != task_id for t in after["suggested"])
+
+
+def test_completion_resets_cycle_need(client):
+    import app as app_module
+
+    today = app_module.today_local()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Necesidad reiniciable",
+            frequency_days=10,
+            initial_due_date=today.isoformat(),
+            anchor_date=today.isoformat(),
+            estimated_minutes=15,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    before = task_from_state(get_state(client), task_id)
+    assert before["need_score"] == 100
+
+    person_id = get_state(client)["people"][0]["id"]
+    completed = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    )
+    assert completed.status_code == 200
+
+    after = task_from_state(get_state(client), task_id)
+    assert after["need_score"] == 0
+    assert after["need_label"] == "Puede esperar"
+    assert after["is_suggested"] is False
+
+
+def test_postpone_recalculates_need_from_new_due_date(client):
+    import app as app_module
+
+    today = app_module.today_local()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Necesidad pospuesta",
+            frequency_days=10,
+            initial_due_date=today.isoformat(),
+            anchor_date=today.isoformat(),
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    postponed_to = today + timedelta(days=5)
+    postponed = client.post(
+        f"/api/tasks/{task_id}/postpone",
+        json={"due_date": postponed_to.isoformat()},
+    )
+    assert postponed.status_code == 200
+
+    task = task_from_state(get_state(client), task_id)
+    assert task["next_due"] == postponed_to.isoformat()
+    assert task["need_score"] == 50
+    assert task["need_label"] == "Pronto"
+    assert task["is_suggested"] is False
+
+
+def test_one_off_task_has_no_need_score_and_duration_validation(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Puntual sin porcentaje",
+            recurrence_type="none",
+            frequency_days=None,
+            estimated_minutes=60,
+        ),
+    )
+    assert created.status_code == 200
+    task = task_from_state(get_state(client), created.json()["id"])
+    assert task["estimated_minutes"] == 60
+    assert task["need_score"] is None
+    assert task["need_label"] is None
+    assert task["is_suggested"] is False
+
+    invalid = client.post(
+        "/api/tasks",
+        json=task_payload(title="Duración inválida", estimated_minutes=0),
+    )
+    assert invalid.status_code == 422
+
+
+def test_estimated_duration_can_be_changed(client):
+    import app as app_module
+
+    today = app_module.today_local()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Duración editable",
+            estimated_minutes=10,
+            initial_due_date=today.isoformat(),
+            anchor_date=today.isoformat(),
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    updated = client.put(
+        f"/api/tasks/{task_id}",
+        json=task_payload(
+            title="Duración editable",
+            estimated_minutes=45,
+            initial_due_date=today.isoformat(),
+            anchor_date=today.isoformat(),
+        ),
+    )
+    assert updated.status_code == 200
+    assert task_from_state(get_state(client), task_id)["estimated_minutes"] == 45
