@@ -2809,6 +2809,206 @@ def acknowledge_event_reminder(event_id: int, minutes: int):
         return {"ok": True}
 
 
+def validate_inventory_payload(conn, payload: InventoryItemIn):
+    if payload.stock_status not in {"ok", "low", "out"}:
+        raise HTTPException(400, "Estado de stock no válido")
+    if payload.area_id is not None:
+        area = conn.execute(
+            "SELECT id FROM areas WHERE id=? AND active=1",
+            (payload.area_id,),
+        ).fetchone()
+        if not area:
+            raise HTTPException(400, "Área no válida o archivada")
+
+
+@app.post("/api/inventory")
+def create_inventory_item(payload: InventoryItemIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del producto no puede estar vacío")
+    with db() as conn:
+        validate_inventory_payload(conn, payload)
+        existing = conn.execute(
+            "SELECT * FROM inventory_items WHERE name=? COLLATE NOCASE",
+            (name,),
+        ).fetchone()
+        if existing:
+            if existing["active"]:
+                raise HTTPException(409, "Ya existe un producto con ese nombre")
+            conn.execute(
+                """UPDATE inventory_items SET active=1,category=?,area_id=?,unit=?,
+                   purchase_quantity=?,stock_status=?,shopping_requested=?,notes=?,
+                   updated_at=? WHERE id=?""",
+                (
+                    payload.category.strip() or "General",
+                    payload.area_id,
+                    payload.unit.strip(),
+                    payload.purchase_quantity.strip(),
+                    payload.stock_status,
+                    1 if payload.shopping_requested else 0,
+                    payload.notes.strip(),
+                    iso_now(),
+                    existing["id"],
+                ),
+            )
+            item_id = existing["id"]
+        else:
+            cur = conn.execute(
+                """INSERT INTO inventory_items(
+                   name,category,area_id,unit,purchase_quantity,stock_status,
+                   shopping_requested,notes,active,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,1,?,?)""",
+                (
+                    name,
+                    payload.category.strip() or "General",
+                    payload.area_id,
+                    payload.unit.strip(),
+                    payload.purchase_quantity.strip(),
+                    payload.stock_status,
+                    1 if payload.shopping_requested else 0,
+                    payload.notes.strip(),
+                    iso_now(),
+                    iso_now(),
+                ),
+            )
+            item_id = cur.lastrowid
+        log_activity(
+            conn,
+            "inventory_created",
+            f'Añadido al inventario "{name}"',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+        return {"id": item_id}
+
+
+@app.put("/api/inventory/{item_id}")
+def update_inventory_item(item_id: int, payload: InventoryItemIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del producto no puede estar vacío")
+    with db() as conn:
+        validate_inventory_payload(conn, payload)
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=?",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto no encontrado")
+        try:
+            conn.execute(
+                """UPDATE inventory_items SET name=?,category=?,area_id=?,unit=?,
+                   purchase_quantity=?,stock_status=?,shopping_requested=?,notes=?,
+                   updated_at=? WHERE id=?""",
+                (
+                    name,
+                    payload.category.strip() or "General",
+                    payload.area_id,
+                    payload.unit.strip(),
+                    payload.purchase_quantity.strip(),
+                    payload.stock_status,
+                    1 if payload.shopping_requested else 0,
+                    payload.notes.strip(),
+                    iso_now(),
+                    item_id,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "Ya existe un producto con ese nombre")
+        log_activity(
+            conn,
+            "inventory_updated",
+            f'Actualizado el producto "{name}"',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+        return {"ok": True}
+
+
+@app.post("/api/inventory/{item_id}/stock")
+def update_inventory_stock(item_id: int, payload: InventoryStockIn):
+    if payload.stock_status not in {"ok", "low", "out"}:
+        raise HTTPException(400, "Estado de stock no válido")
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=? AND active=1",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto no encontrado")
+        requested = (
+            int(payload.shopping_requested)
+            if payload.shopping_requested is not None
+            else item["shopping_requested"]
+        )
+        if payload.stock_status == "ok" and payload.shopping_requested is None:
+            requested = 0
+        conn.execute(
+            """UPDATE inventory_items SET stock_status=?,shopping_requested=?,
+               updated_at=? WHERE id=?""",
+            (payload.stock_status, requested, iso_now(), item_id),
+        )
+        labels = {"ok": "Hay", "low": "Poco", "out": "Falta"}
+        log_activity(
+            conn,
+            "inventory_stock",
+            f'{item["name"]}: {labels[payload.stock_status]}',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+        return {"ok": True}
+
+
+@app.delete("/api/inventory/{item_id}")
+def archive_inventory_item(item_id: int):
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=?",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto no encontrado")
+        linked = conn.execute(
+            """SELECT COUNT(*) FROM task_supplies s
+               JOIN tasks t ON t.id=s.task_id
+               WHERE s.item_id=? AND t.active=1""",
+            (item_id,),
+        ).fetchone()[0]
+        if linked:
+            raise HTTPException(
+                409,
+                f"El producto está asociado a {linked} tarea(s) activa(s). Quítalo de esas tareas antes de archivarlo.",
+            )
+        conn.execute(
+            "UPDATE inventory_items SET active=0,updated_at=? WHERE id=?",
+            (iso_now(), item_id),
+        )
+        log_activity(
+            conn,
+            "inventory_archived",
+            f'Archivado el producto "{item["name"]}"',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+        return {"ok": True}
+
+
+@app.post("/api/inventory/{item_id}/restore")
+def restore_inventory_item(item_id: int):
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=?",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto no encontrado")
+        conn.execute(
+            "UPDATE inventory_items SET active=1,updated_at=? WHERE id=?",
+            (iso_now(), item_id),
+        )
+        return {"ok": True}
+
+
 @app.post("/api/vacation/start")
 def start_vacation(payload: VacationIn):
     target = validate_pause_payload(payload.return_date, payload.resume_mode)
