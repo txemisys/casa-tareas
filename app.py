@@ -956,6 +956,8 @@ def area_json(conn, area):
     ).fetchone()[0]
     d["pause"] = effective_area_pause(conn, area)
     d["paused"] = bool(d["pause"])
+    d["attachments"] = attachments_for(conn, "area", d["id"])
+    d["attachment_count"] = len(d["attachments"])
     return d
 
 
@@ -2343,6 +2345,15 @@ def task_json(conn, task):
             owner = dict(row)
     d["effective_owner"] = owner
     d["responsibility_source"] = source
+    d["attachments"] = attachments_for(conn, "task", d["id"])
+    d["attachment_count"] = len(d["attachments"])
+    d["supplies"] = task_supplies(conn, d["id"])
+    d["missing_supplies"] = [
+        item for item in d["supplies"] if item["stock_status"] == "out"
+    ]
+    d["shopping_supplies"] = [
+        item for item in d["supplies"] if item["needs_purchase"]
+    ]
 
     last = last_completion(conn, task["id"])
     if last:
@@ -2387,6 +2398,7 @@ class TaskIn(BaseModel):
     definition_of_done: str = ""
     responsibility_notes: str = ""
     estimated_minutes: int | None = Field(default=None, ge=1, le=1440)
+    supply_ids: list[int] = Field(default_factory=list)
 
 
 class AreaIn(BaseModel):
@@ -2412,6 +2424,28 @@ class EventIn(BaseModel):
 class TelegramChatIn(BaseModel):
     chat_id: int
     title: str = Field(default="", max_length=200)
+
+
+class InventoryItemIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    category: str = Field(default="General", max_length=80)
+    area_id: int | None = None
+    unit: str = Field(default="", max_length=50)
+    purchase_quantity: str = Field(default="", max_length=80)
+    stock_status: str = "ok"
+    shopping_requested: bool = False
+    notes: str = Field(default="", max_length=1000)
+
+
+class InventoryStockIn(BaseModel):
+    stock_status: str
+    shopping_requested: bool | None = None
+
+
+class CalendarSubscriptionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    url: str = Field(min_length=8, max_length=2000)
+    area_id: int | None = None
 
 
 class PauseIn(BaseModel):
@@ -2443,17 +2477,18 @@ class PersonIn(BaseModel):
 
 @app.on_event("startup")
 async def startup():
-    global TELEGRAM_TASK
+    global TELEGRAM_TASK, CALENDAR_TASK
     init_db()
     with db() as conn:
         sync_pause_states(conn)
     if TELEGRAM_BOT_TOKEN:
         TELEGRAM_TASK = asyncio.create_task(telegram_reminder_loop())
+    CALENDAR_TASK = asyncio.create_task(calendar_sync_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global TELEGRAM_TASK
+    global TELEGRAM_TASK, CALENDAR_TASK
     if TELEGRAM_TASK:
         TELEGRAM_TASK.cancel()
         try:
@@ -2461,6 +2496,13 @@ async def shutdown():
         except asyncio.CancelledError:
             pass
         TELEGRAM_TASK = None
+    if CALENDAR_TASK:
+        CALENDAR_TASK.cancel()
+        try:
+            await CALENDAR_TASK
+        except asyncio.CancelledError:
+            pass
+        CALENDAR_TASK = None
 
 
 @app.get("/")
@@ -2470,7 +2512,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.9.0"}
+    return {"ok": True, "version": "1.0.0"}
 
 
 @app.get("/api/state")
