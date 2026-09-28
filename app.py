@@ -40,7 +40,7 @@ ICAL_SYNC_MINUTES = max(5, int(os.getenv("ICAL_SYNC_MINUTES", "30") or "30"))
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.0.1")
+app = FastAPI(title="Casa Tareas", version="1.0.2")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -508,6 +508,46 @@ def latest_undo(conn):
         (cutoff,),
     ).fetchone()
     return dict(row) if row else None
+
+
+def open_completion_undo_map(conn):
+    result = {}
+    rows = conn.execute(
+        """SELECT * FROM undo_actions
+           WHERE action_type='complete' AND undone_at IS NULL
+           ORDER BY id DESC"""
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+            completion_id = int(payload.get("completion_id"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if completion_id not in result:
+            result[completion_id] = {
+                "undo_id": row["id"],
+                "payload": payload,
+            }
+    return result
+
+
+def restore_completion_payload(conn, payload):
+    completion_id = int(payload["completion_id"])
+    task_id = int(payload["task_id"])
+    conn.execute(
+        "DELETE FROM completions WHERE id=?",
+        (completion_id,),
+    )
+    conn.execute(
+        "UPDATE tasks SET active=? WHERE id=?",
+        (payload["previous_active"], task_id),
+    )
+    if payload.get("active_override_id"):
+        conn.execute(
+            "UPDATE schedule_overrides SET consumed_at=NULL WHERE id=?",
+            (payload["active_override_id"],),
+        )
+    restore_queue_row(conn, payload.get("queue"))
 
 
 def task_need(conn, task):
@@ -2615,7 +2655,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.0.1"}
+    return {"ok": True, "version": "1.0.2"}
 
 
 @app.get("/api/state")
@@ -2732,7 +2772,20 @@ def state():
                JOIN people p ON p.id=c.person_id
                ORDER BY c.completed_at DESC,c.id DESC LIMIT 200"""
         ).fetchall()
-        history = [dict(r) for r in history_rows]
+        completion_undos = open_completion_undo_map(conn)
+        latest_seen_tasks = set()
+        history = []
+        for row in history_rows:
+            item = dict(row)
+            undo_info = completion_undos.get(item["id"])
+            is_latest_for_task = item["task_id"] not in latest_seen_tasks
+            latest_seen_tasks.add(item["task_id"])
+            item["can_undo_to_today"] = bool(
+                is_latest_for_task
+                and undo_info
+                and undo_info["payload"].get("queue")
+            )
+            history.append(item)
         cutoff = (now_local() - timedelta(days=30)).isoformat()
         stats = [
             dict(r)
@@ -4232,6 +4285,63 @@ def restore_person(person_id: int):
         return {"ok": True, "undo_id": undo_id}
 
 
+@app.post("/api/completions/{completion_id}/undo-to-today")
+def undo_completion_to_today(completion_id: int):
+    with db() as conn:
+        completion = conn.execute(
+            """SELECT c.*,t.title
+               FROM completions c
+               JOIN tasks t ON t.id=c.task_id
+               WHERE c.id=?""",
+            (completion_id,),
+        ).fetchone()
+        if not completion:
+            raise HTTPException(404, "La realización ya no existe")
+
+        later = conn.execute(
+            """SELECT id FROM completions
+               WHERE task_id=? AND id>? ORDER BY id DESC LIMIT 1""",
+            (completion["task_id"], completion_id),
+        ).fetchone()
+        if later:
+            raise HTTPException(
+                409,
+                "Hay una realización posterior de esta tarea. Deshaz primero la más reciente.",
+            )
+
+        undo_info = open_completion_undo_map(conn).get(completion_id)
+        if not undo_info:
+            raise HTTPException(
+                409,
+                "Esta realización ya no tiene información suficiente para deshacerse.",
+            )
+        payload = undo_info["payload"]
+        if not payload.get("queue"):
+            raise HTTPException(
+                409,
+                "Esta realización no procedía de la cola de Hoy.",
+            )
+
+        restore_completion_payload(conn, payload)
+        conn.execute(
+            "UPDATE undo_actions SET undone_at=? WHERE id=?",
+            (iso_now(), undo_info["undo_id"]),
+        )
+        log_activity(
+            conn,
+            "completion_undone",
+            f'Deshecha la realización de "{completion["title"]}"',
+            detail="La tarea ha vuelto a Hoy.",
+            entity_type="task",
+            entity_id=completion["task_id"],
+        )
+        return {
+            "ok": True,
+            "task_id": completion["task_id"],
+            "task_title": completion["title"],
+        }
+
+
 @app.post("/api/undo/{undo_id}")
 def undo(undo_id: int):
     with db() as conn:
@@ -4281,20 +4391,7 @@ def undo(undo_id: int):
             restore_queue_row(conn, payload.get("queue"))
 
         elif action == "complete":
-            conn.execute(
-                "DELETE FROM completions WHERE id=?",
-                (payload["completion_id"],),
-            )
-            conn.execute(
-                "UPDATE tasks SET active=? WHERE id=?",
-                (payload["previous_active"], payload["task_id"]),
-            )
-            if payload.get("active_override_id"):
-                conn.execute(
-                    "UPDATE schedule_overrides SET consumed_at=NULL WHERE id=?",
-                    (payload["active_override_id"],),
-                )
-            restore_queue_row(conn, payload.get("queue"))
+            restore_completion_payload(conn, payload)
 
         elif action == "archive_task":
             conn.execute(
