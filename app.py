@@ -1415,11 +1415,15 @@ def telegram_handle_command(chat_id, text):
 
     with db() as conn:
         if command == "/hoy":
+            sync_pause_states(conn)
             task_rows = conn.execute(
-                """SELECT t.id,t.title FROM today_queue q
+                """SELECT t.* FROM today_queue q
                    JOIN tasks t ON t.id=q.task_id
                    WHERE t.active=1 ORDER BY q.position,q.task_id"""
             ).fetchall()
+            task_rows = [
+                r for r in task_rows if not effective_task_pause(conn, r)
+            ]
             event_rows = conn.execute(
                 "SELECT id,title,event_at FROM events WHERE active=1 ORDER BY event_at,id"
             ).fetchall()
@@ -1471,9 +1475,11 @@ def telegram_handle_command(chat_id, text):
 
         if command == "/pendientes":
             area = telegram_area_or_error(conn, args) if args else None
+            sync_pause_states(conn)
             rows = conn.execute(
                 "SELECT * FROM tasks WHERE active=1 ORDER BY title COLLATE NOCASE,id"
             ).fetchall()
+            rows = [r for r in rows if not effective_task_pause(conn, r)]
             if area:
                 rows = [r for r in rows if r["area_id"] == area["id"]]
             if not rows:
@@ -1542,6 +1548,11 @@ def telegram_handle_command(chat_id, text):
             task = telegram_task_or_error(conn, parts[0])
             destination_text = parts[1].casefold()
             area = None if destination_text in {"sin área", "sin area", "-"} else telegram_area_or_error(conn, parts[1])
+            destination_pause = pause_for_area_id(conn, area["id"] if area else None)
+            if destination_pause:
+                raise ValueError(
+                    f'El área de destino está pausada hasta {destination_pause["return_date"]}.'
+                )
             previous_area_id = task["area_id"]
             new_area_id = area["id"] if area else None
             if previous_area_id == new_area_id:
@@ -1824,6 +1835,11 @@ async def telegram_reminder_loop():
                 await asyncio.to_thread(ensure_telegram_bot_identity)
                 identity_ready = True
 
+            def sync_pauses_once():
+                with db() as conn:
+                    sync_pause_states(conn)
+
+            await asyncio.to_thread(sync_pauses_once)
             await asyncio.to_thread(process_telegram_updates, 20)
             now_tick = time.monotonic()
             if now_tick - last_reminder_check >= TELEGRAM_POLL_SECONDS:
