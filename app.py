@@ -2903,7 +2903,15 @@ def create_event(payload: EventIn):
                 iso_now(),
             ),
         )
-        return {"id": cur.lastrowid}
+        event_id = cur.lastrowid
+        log_activity(
+            conn,
+            "event_created",
+            f'Creado el evento "{payload.title.strip()}"',
+            entity_type="event",
+            entity_id=event_id,
+        )
+        return {"id": event_id}
 
 
 @app.put("/api/events/{event_id}")
@@ -2936,6 +2944,13 @@ def update_event(event_id: int, payload: EventIn):
         )
         conn.execute("DELETE FROM event_alert_ack WHERE event_id=?", (event_id,))
         conn.execute("DELETE FROM notification_deliveries WHERE event_id=?", (event_id,))
+        log_activity(
+            conn,
+            "event_updated",
+            f'Actualizado el evento "{payload.title.strip()}"',
+            entity_type="event",
+            entity_id=event_id,
+        )
         return {"ok": True}
 
 
@@ -2946,6 +2961,13 @@ def delete_event(event_id: int):
         if not event:
             raise HTTPException(404, "Evento no encontrado")
         conn.execute("DELETE FROM events WHERE id=?", (event_id,))
+        log_activity(
+            conn,
+            "event_deleted",
+            f'Eliminado el evento "{event["title"]}"',
+            entity_type="event",
+            entity_id=event_id,
+        )
         return {"ok": True}
 
 
