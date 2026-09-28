@@ -195,6 +195,75 @@ def init_db():
           created_at TEXT NOT NULL,
           undone_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS activity_log(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          detail TEXT NOT NULL DEFAULT '',
+          entity_type TEXT,
+          entity_id INTEGER,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS attachments(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_type TEXT NOT NULL CHECK(entity_type IN ('task','area')),
+          entity_id INTEGER NOT NULL,
+          original_name TEXT NOT NULL,
+          stored_name TEXT NOT NULL UNIQUE,
+          content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+          size_bytes INTEGER NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS calendar_subscriptions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          url TEXT NOT NULL,
+          area_id INTEGER,
+          active INTEGER NOT NULL DEFAULT 1,
+          last_sync_at TEXT,
+          last_error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS calendar_external_events(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subscription_id INTEGER NOT NULL,
+          uid TEXT NOT NULL,
+          occurrence_key TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          location TEXT NOT NULL DEFAULT '',
+          start_at TEXT NOT NULL,
+          end_at TEXT,
+          all_day INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL,
+          UNIQUE(subscription_id,uid,occurrence_key),
+          FOREIGN KEY(subscription_id) REFERENCES calendar_subscriptions(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS inventory_items(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          category TEXT NOT NULL DEFAULT 'General',
+          area_id INTEGER,
+          unit TEXT NOT NULL DEFAULT '',
+          purchase_quantity TEXT NOT NULL DEFAULT '',
+          stock_status TEXT NOT NULL DEFAULT 'ok'
+            CHECK(stock_status IN ('ok','low','out')),
+          shopping_requested INTEGER NOT NULL DEFAULT 0,
+          notes TEXT NOT NULL DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_supplies(
+          task_id INTEGER NOT NULL,
+          item_id INTEGER NOT NULL,
+          PRIMARY KEY(task_id,item_id),
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(item_id) REFERENCES inventory_items(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS app_meta(
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
@@ -206,6 +275,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_telegram_pending_open
           ON telegram_pending_actions(used_at, id DESC);
         CREATE INDEX IF NOT EXISTS idx_undo_open ON undo_actions(undone_at, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC,id DESC);
+        CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type,entity_id,id);
+        CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_external_events(start_at,subscription_id);
+        CREATE INDEX IF NOT EXISTS idx_inventory_active ON inventory_items(active,stock_status,name);
+        CREATE INDEX IF NOT EXISTS idx_task_supplies_item ON task_supplies(item_id,task_id);
         """)
 
         # Migraciones aditivas para bases creadas por versiones anteriores.
