@@ -543,11 +543,13 @@ def telegram_status(conn):
 def telegram_api_request(method, payload=None):
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("Falta TELEGRAM_BOT_TOKEN en la configuración del contenedor")
+    payload = payload or {}
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
-    body = urllib.parse.urlencode(payload or {}).encode("utf-8")
+    body = urllib.parse.urlencode(payload).encode("utf-8")
     request = urllib.request.Request(url, data=body, method="POST")
+    api_wait = int(payload.get("timeout", 0) or 0)
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with urllib.request.urlopen(request, timeout=max(12, api_wait + 5)) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -562,36 +564,64 @@ def telegram_api_request(method, payload=None):
     return data.get("result")
 
 
-def telegram_detect_chats():
-    updates = telegram_api_request(
-        "getUpdates",
-        {
-            "limit": 100,
-            "timeout": 0,
-            "allowed_updates": json.dumps(["message", "channel_post", "my_chat_member"]),
-        },
+def telegram_chat_label(chat):
+    return (
+        chat.get("title")
+        or " ".join(x for x in [chat.get("first_name"), chat.get("last_name")] if x)
+        or chat.get("username")
+        or str(chat.get("id", "Telegram"))
     )
-    chats = {}
-    for update in updates or []:
-        source = update.get("message") or update.get("channel_post") or update.get("my_chat_member")
-        if not source:
-            continue
-        chat = source.get("chat")
-        if not chat or "id" not in chat:
-            continue
-        chat_id = int(chat["id"])
-        title = (
-            chat.get("title")
-            or " ".join(x for x in [chat.get("first_name"), chat.get("last_name")] if x)
-            or chat.get("username")
-            or str(chat_id)
-        )
-        chats[chat_id] = {
-            "chat_id": chat_id,
-            "title": title,
-            "type": chat.get("type", "unknown"),
-        }
-    return sorted(chats.values(), key=lambda x: (x["type"], x["title"].lower()))
+
+
+def telegram_update_chat(update):
+    callback = update.get("callback_query")
+    if callback and callback.get("message"):
+        return callback["message"].get("chat")
+    source = (
+        update.get("message")
+        or update.get("channel_post")
+        or update.get("my_chat_member")
+    )
+    return source.get("chat") if source else None
+
+
+def remember_telegram_chat(conn, chat):
+    if not chat or "id" not in chat:
+        return
+    conn.execute(
+        """INSERT INTO telegram_chats_seen(chat_id,title,chat_type,last_seen_at)
+           VALUES(?,?,?,?)
+           ON CONFLICT(chat_id) DO UPDATE SET
+             title=excluded.title,
+             chat_type=excluded.chat_type,
+             last_seen_at=excluded.last_seen_at""",
+        (
+            int(chat["id"]),
+            telegram_chat_label(chat),
+            chat.get("type", "unknown"),
+            iso_now(),
+        ),
+    )
+
+
+def telegram_detect_chats():
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT chat_id,title,chat_type
+               FROM telegram_chats_seen
+               ORDER BY last_seen_at DESC,title COLLATE NOCASE"""
+        ).fetchall()
+    return [
+        {"chat_id": r["chat_id"], "title": r["title"], "type": r["chat_type"]}
+        for r in rows
+    ]
+
+
+def telegram_send_message(chat_id, text, reply_markup=None):
+    payload = {"chat_id": str(chat_id), "text": text}
+    if reply_markup is not None:
+        payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    return telegram_api_request("sendMessage", payload)
 
 
 def telegram_reminder_label(minutes):
@@ -611,11 +641,7 @@ def telegram_reminder_label(minutes):
 def telegram_event_message(event, reminder_minutes):
     event_at = normalize_event_at(event["event_at"])
     area_name = event.get("area_name")
-    lines = [
-        "🔔 Casa Tareas",
-        "",
-        event["title"],
-    ]
+    lines = ["🔔 Casa Tareas", "", event["title"]]
     if area_name:
         lines.append(f"🏠 {area_name}")
     lines.append(f"📅 {event_at.strftime('%d.%m.%Y · %H:%M')}")
@@ -675,12 +701,9 @@ def process_telegram_reminders():
 
     sent = 0
     for event, most_recent, due, chat_id in candidates:
-        telegram_api_request(
-            "sendMessage",
-            {
-                "chat_id": str(chat_id),
-                "text": telegram_event_message(event, most_recent),
-            },
+        telegram_send_message(
+            chat_id,
+            telegram_event_message(event, most_recent),
         )
         delivered_at = iso_now()
         with db() as conn:
@@ -695,15 +718,709 @@ def process_telegram_reminders():
     return sent
 
 
+def telegram_find_task(conn, query):
+    query = (query or "").strip()
+    if not query:
+        return []
+    if query.startswith("#") and query[1:].isdigit():
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id=? AND active=1",
+            (int(query[1:]),),
+        ).fetchone()
+        return [row] if row else []
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE active=1 ORDER BY title COLLATE NOCASE,id"
+    ).fetchall()
+    exact = [r for r in rows if r["title"].casefold() == query.casefold()]
+    if exact:
+        return exact
+    matches = [r for r in rows if query.casefold() in r["title"].casefold()]
+    return matches[:8]
+
+
+def telegram_find_area(conn, query):
+    query = (query or "").strip()
+    if not query:
+        return None
+    rows = conn.execute(
+        "SELECT * FROM areas WHERE active=1 ORDER BY name COLLATE NOCASE,id"
+    ).fetchall()
+    exact = [r for r in rows if r["name"].casefold() == query.casefold()]
+    if exact:
+        return exact[0]
+    matches = [r for r in rows if query.casefold() in r["name"].casefold()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def telegram_task_or_error(conn, query):
+    matches = telegram_find_task(conn, query)
+    if not matches:
+        raise ValueError(f'No encuentro una tarea activa que coincida con "{query}".')
+    if len(matches) > 1:
+        choices = "\n".join(f'• #{r["id"]} {r["title"]}' for r in matches)
+        raise ValueError(
+            "Hay varias tareas que coinciden. Usa el título completo o el #id:\n" + choices
+        )
+    return matches[0]
+
+
+def telegram_area_or_error(conn, query):
+    area = telegram_find_area(conn, query)
+    if not area:
+        names = [
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM areas WHERE active=1 ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        ]
+        raise ValueError(
+            f'No encuentro el área "{query}". Áreas: ' + ", ".join(names)
+        )
+    return area
+
+
+def telegram_parse_day(value):
+    value = (value or "").strip().casefold()
+    if value in {"mañana", "manana"}:
+        return today_local() + timedelta(days=1)
+    if value == "hoy":
+        return today_local()
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            "Fecha no válida. Usa mañana, hoy o AAAA-MM-DD."
+        ) from exc
+
+
+def telegram_parse_event_at(value):
+    value = (value or "").strip()
+    folded = value.casefold()
+    for prefix, delta in (("mañana", 1), ("manana", 1), ("hoy", 0)):
+        if folded.startswith(prefix):
+            rest = value[len(prefix):].strip() or "09:00"
+            try:
+                hour, minute = map(int, rest.split(":", 1))
+                return datetime.combine(
+                    today_local() + timedelta(days=delta),
+                    datetime.min.time().replace(hour=hour, minute=minute),
+                    tzinfo=TZ,
+                )
+            except (ValueError, TypeError):
+                raise ValueError("Hora no válida. Ejemplo: mañana 19:00")
+    try:
+        parsed = datetime.fromisoformat(value.replace(" ", "T", 1))
+        return parsed.replace(tzinfo=TZ) if parsed.tzinfo is None else parsed.astimezone(TZ)
+    except ValueError:
+        pass
+    for fmt in ("%d.%m.%Y %H:%M", "%d/%m/%Y %H:%M"):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=TZ)
+        except ValueError:
+            continue
+    raise ValueError(
+        "Fecha/hora no válida. Usa AAAA-MM-DD HH:MM, DD.MM.AAAA HH:MM o mañana 19:00."
+    )
+
+
+def telegram_parse_reminders(value):
+    value = (value or "").strip().casefold()
+    if not value:
+        return [1440]
+    result = []
+    for raw in value.replace(";", ",").split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        if token in {"ahora", "0"}:
+            minutes = 0
+        elif token.endswith("d") and token[:-1].isdigit():
+            minutes = int(token[:-1]) * 1440
+        elif token.endswith("h") and token[:-1].isdigit():
+            minutes = int(token[:-1]) * 60
+        elif token.endswith("m") and token[:-1].isdigit():
+            minutes = int(token[:-1])
+        else:
+            raise ValueError(
+                f'Recordatorio "{token}" no válido. Ejemplos: 7d, 1d, 2h, 30m.'
+            )
+        result.append(minutes)
+    return normalize_reminders(result)
+
+
+def telegram_help_text():
+    return (
+        "🏠 Casa Tareas · comandos\n\n"
+        "/hoy — tareas y eventos de hoy\n"
+        "/agenda — próximos eventos\n"
+        "/pendientes [Área] — tareas activas\n"
+        "/tarea Título | Área | gestión — crear tarea\n"
+        "/hecha Tarea — elegir quién la hizo\n"
+        "/mover Tarea | Área — cambiar de área\n"
+        "/renombrar Tarea | Nuevo nombre\n"
+        "/posponer Tarea | mañana (o AAAA-MM-DD)\n"
+        "/evento Título | AAAA-MM-DD HH:MM | Área | 1d,2h\n\n"
+        "También puedes escribir /casa seguido de cualquiera de esos comandos, "
+        "por ejemplo: /casa hecha Sacar basura.\n"
+        "No hay comandos de borrado desde Telegram."
+    )
+
+
+def telegram_store_last_undo(conn, undo_id):
+    if undo_id:
+        set_meta(conn, "telegram_last_undo_id", undo_id)
+
+
+def telegram_create_task(conn, args):
+    parts = [p.strip() for p in args.split("|")]
+    title = parts[0].strip() if parts else ""
+    if not title:
+        raise ValueError("Uso: /tarea Título | Área | gestión")
+    duplicate = conn.execute(
+        "SELECT id FROM tasks WHERE active=1 AND title=? COLLATE NOCASE",
+        (title,),
+    ).fetchone()
+    if duplicate:
+        raise ValueError(f'Ya existe una tarea activa con ese título (#{duplicate["id"]}).')
+
+    area = telegram_area_or_error(conn, parts[1]) if len(parts) > 1 and parts[1] else None
+    task_type = "execution"
+    if len(parts) > 2 and parts[2]:
+        kind = parts[2].casefold()
+        if kind.startswith("gest") or kind in {"mental", "🧠"}:
+            task_type = "management"
+        elif kind.startswith("ejec") or kind in {"fisica", "física", "🧹"}:
+            task_type = "execution"
+        else:
+            raise ValueError('Tipo no válido. Usa "gestión" o "ejecución".')
+
+    due = today_local().isoformat()
+    color = area["color"] if area else "#dcecff"
+    icon = "🧠" if task_type == "management" else "🧹"
+    cur = conn.execute(
+        """INSERT INTO tasks(title,description,category,color,icon,recurrence_type,
+           frequency_days,initial_due_date,anchor_date,area_id,owner_person_id,
+           task_type,definition_of_done,responsibility_notes,active,created_at)
+           VALUES(?,?,?,?,?,'none',NULL,?,?,?,?,?,?,?,1,?)""",
+        (
+            title,
+            "",
+            "General",
+            color,
+            icon,
+            due,
+            due,
+            area["id"] if area else None,
+            None,
+            task_type,
+            "",
+            "",
+            iso_now(),
+        ),
+    )
+    task_id = cur.lastrowid
+    undo_id = record_undo(
+        conn,
+        "create_task",
+        {"task_id": task_id},
+        f'Creada "{title}" desde Telegram',
+    )
+    telegram_store_last_undo(conn, undo_id)
+    return task_id, title, area, task_type
+
+
+def telegram_create_event(conn, args):
+    parts = [p.strip() for p in args.split("|")]
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        raise ValueError(
+            "Uso: /evento Título | AAAA-MM-DD HH:MM | Área | 1d,2h"
+        )
+    title = parts[0]
+    event_at = telegram_parse_event_at(parts[1])
+    area = telegram_area_or_error(conn, parts[2]) if len(parts) > 2 and parts[2] else None
+    reminders = telegram_parse_reminders(parts[3] if len(parts) > 3 else "")
+    cur = conn.execute(
+        """INSERT INTO events(title,description,area_id,event_at,reminders_json,
+           active,created_at,updated_at)
+           VALUES(?,?,?,?,?,1,?,?)""",
+        (
+            title,
+            "",
+            area["id"] if area else None,
+            event_at.isoformat(timespec="minutes"),
+            json.dumps(reminders),
+            iso_now(),
+            iso_now(),
+        ),
+    )
+    event_id = cur.lastrowid
+    undo_id = record_undo(
+        conn,
+        "create_event",
+        {"event_id": event_id},
+        f'Creado evento "{title}" desde Telegram',
+    )
+    telegram_store_last_undo(conn, undo_id)
+    return event_id, title, event_at, area, reminders
+
+
+def telegram_handle_command(chat_id, text):
+    text = (text or "").strip()
+    if not text.startswith("/"):
+        return
+    first, _, rest = text.partition(" ")
+    command = first.split("@", 1)[0].casefold()
+    args = rest.strip()
+
+    if command == "/casa":
+        if not args:
+            telegram_send_message(chat_id, telegram_help_text())
+            return
+        sub, _, sub_args = args.partition(" ")
+        aliases = {
+            "añade": "/tarea",
+            "anade": "/tarea",
+            "nueva": "/tarea",
+            "tarea": "/tarea",
+            "hecha": "/hecha",
+            "realizada": "/hecha",
+            "mover": "/mover",
+            "renombrar": "/renombrar",
+            "posponer": "/posponer",
+            "evento": "/evento",
+            "hoy": "/hoy",
+            "agenda": "/agenda",
+            "pendientes": "/pendientes",
+            "ayuda": "/ayuda",
+        }
+        command = aliases.get(sub.casefold(), "/" + sub.casefold())
+        args = sub_args.strip()
+
+    if command in {"/start", "/ayuda", "/help"}:
+        telegram_send_message(chat_id, telegram_help_text())
+        return
+
+    with db() as conn:
+        if command == "/hoy":
+            task_rows = conn.execute(
+                """SELECT t.id,t.title FROM today_queue q
+                   JOIN tasks t ON t.id=q.task_id
+                   WHERE t.active=1 ORDER BY q.position,q.task_id"""
+            ).fetchall()
+            event_rows = conn.execute(
+                "SELECT id,title,event_at FROM events WHERE active=1 ORDER BY event_at,id"
+            ).fetchall()
+            events = [
+                r for r in event_rows
+                if normalize_event_at(r["event_at"]).date() == today_local()
+            ]
+            lines = ["📌 Hoy"]
+            if task_rows:
+                lines.append("\nTareas:")
+                lines.extend(f'• #{r["id"]} {r["title"]}' for r in task_rows)
+            else:
+                lines.append("\nTareas: ninguna en la cola de Hoy.")
+            if events:
+                lines.append("\nEventos:")
+                lines.extend(
+                    f'• {normalize_event_at(r["event_at"]).strftime("%H:%M")} · {r["title"]}'
+                    for r in events
+                )
+            else:
+                lines.append("\nEventos: ninguno.")
+            telegram_send_message(chat_id, "\n".join(lines))
+            return
+
+        if command == "/agenda":
+            rows = conn.execute(
+                "SELECT id,title,event_at,area_id FROM events WHERE active=1 ORDER BY event_at,id"
+            ).fetchall()
+            upcoming = [
+                r for r in rows if normalize_event_at(r["event_at"]) >= now_local()
+            ][:10]
+            if not upcoming:
+                telegram_send_message(chat_id, "📅 No hay eventos próximos.")
+                return
+            lines = ["📅 Próximos eventos"]
+            for r in upcoming:
+                area = (
+                    conn.execute("SELECT name FROM areas WHERE id=?", (r["area_id"],)).fetchone()
+                    if r["area_id"]
+                    else None
+                )
+                suffix = f' · {area["name"]}' if area else ""
+                lines.append(
+                    f'• {normalize_event_at(r["event_at"]).strftime("%d.%m %H:%M")} · '
+                    f'{r["title"]}{suffix}'
+                )
+            telegram_send_message(chat_id, "\n".join(lines))
+            return
+
+        if command == "/pendientes":
+            area = telegram_area_or_error(conn, args) if args else None
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE active=1 ORDER BY title COLLATE NOCASE,id"
+            ).fetchall()
+            if area:
+                rows = [r for r in rows if r["area_id"] == area["id"]]
+            if not rows:
+                telegram_send_message(
+                    chat_id,
+                    "✅ No hay tareas activas" + (f" en {area['name']}." if area else "."),
+                )
+                return
+            lines = [
+                "📋 Pendientes" + (f" · {area['name']}" if area else "")
+            ]
+            for r in rows[:25]:
+                due = due_date(conn, r)
+                suffix = f" · {due.isoformat()}" if due else ""
+                lines.append(f'• #{r["id"]} {r["title"]}{suffix}')
+            if len(rows) > 25:
+                lines.append(f"… y {len(rows)-25} más.")
+            telegram_send_message(chat_id, "\n".join(lines))
+            return
+
+        if command == "/tarea":
+            task_id, title, area, task_type = telegram_create_task(conn, args)
+            lines = [f"✅ Tarea creada · #{task_id}", title]
+            if area:
+                lines.append(f"🏠 {area['name']}")
+            lines.append("🧠 Gestión" if task_type == "management" else "🧹 Ejecución")
+            telegram_send_message(chat_id, "\n".join(lines))
+            return
+
+        if command == "/hecha":
+            task = telegram_task_or_error(conn, args)
+            people = conn.execute(
+                "SELECT id,name,icon FROM people WHERE active=1 ORDER BY name COLLATE NOCASE,id"
+            ).fetchall()
+            cur = conn.execute(
+                """INSERT INTO telegram_pending_actions(
+                   action_type,payload,chat_id,created_at
+                   ) VALUES('complete',?,?,?)""",
+                (
+                    json.dumps({"task_id": task["id"]}),
+                    chat_id,
+                    iso_now(),
+                ),
+            )
+            pending_id = cur.lastrowid
+            keyboard = {
+                "inline_keyboard": [[
+                    {
+                        "text": f'{p["icon"]} {p["name"]}',
+                        "callback_data": f"done:{pending_id}:{p['id']}",
+                    }
+                    for p in people
+                ]]
+            }
+            telegram_send_message(
+                chat_id,
+                f'¿Quién hizo "{task["title"]}"?',
+                reply_markup=keyboard,
+            )
+            return
+
+        if command == "/mover":
+            parts = [p.strip() for p in args.split("|", 1)]
+            if len(parts) != 2 or not all(parts):
+                raise ValueError("Uso: /mover Tarea | Área")
+            task = telegram_task_or_error(conn, parts[0])
+            destination_text = parts[1].casefold()
+            area = None if destination_text in {"sin área", "sin area", "-"} else telegram_area_or_error(conn, parts[1])
+            previous_area_id = task["area_id"]
+            new_area_id = area["id"] if area else None
+            if previous_area_id == new_area_id:
+                telegram_send_message(chat_id, "ℹ️ La tarea ya está en esa área.")
+                return
+            conn.execute(
+                "UPDATE tasks SET area_id=? WHERE id=?",
+                (new_area_id, task["id"]),
+            )
+            undo_id = record_undo(
+                conn,
+                "move_task_area",
+                {"task_id": task["id"], "previous_area_id": previous_area_id},
+                f'Movida de área "{task["title"]}"',
+            )
+            telegram_store_last_undo(conn, undo_id)
+            telegram_send_message(
+                chat_id,
+                f'✅ "{task["title"]}" → {area["name"] if area else "Sin área"}',
+            )
+            return
+
+        if command == "/renombrar":
+            parts = [p.strip() for p in args.split("|", 1)]
+            if len(parts) != 2 or not all(parts):
+                raise ValueError("Uso: /renombrar Tarea | Nuevo nombre")
+            task = telegram_task_or_error(conn, parts[0])
+            new_title = parts[1][:120].strip()
+            old_title = task["title"]
+            if new_title.casefold() == old_title.casefold():
+                telegram_send_message(chat_id, "ℹ️ El título no cambia.")
+                return
+            conn.execute(
+                "UPDATE tasks SET title=? WHERE id=?",
+                (new_title, task["id"]),
+            )
+            undo_id = record_undo(
+                conn,
+                "rename_task",
+                {"task_id": task["id"], "previous_title": old_title},
+                f'Renombrada "{old_title}" a "{new_title}"',
+            )
+            telegram_store_last_undo(conn, undo_id)
+            telegram_send_message(chat_id, f'✅ Tarea renombrada: "{new_title}"')
+            return
+
+        if command == "/posponer":
+            parts = [p.strip() for p in args.split("|", 1)]
+            if len(parts) != 2 or not all(parts):
+                raise ValueError("Uso: /posponer Tarea | mañana")
+            task = telegram_task_or_error(conn, parts[0])
+            new_day = telegram_parse_day(parts[1])
+            result = postpone_task_action(conn, task["id"], new_day.isoformat())
+            telegram_store_last_undo(conn, result["undo_id"])
+            telegram_send_message(
+                chat_id,
+                f'✅ "{task["title"]}" pospuesta a {new_day.isoformat()}',
+            )
+            return
+
+        if command == "/evento":
+            event_id, title, event_at, area, reminders = telegram_create_event(conn, args)
+            lines = [
+                f"✅ Evento creado · #{event_id}",
+                title,
+                f"📅 {event_at.strftime('%d.%m.%Y · %H:%M')}",
+            ]
+            if area:
+                lines.append(f"🏠 {area['name']}")
+            if reminders:
+                lines.append(
+                    "🔔 " + ", ".join(telegram_reminder_label(m) for m in reminders)
+                )
+            telegram_send_message(chat_id, "\n".join(lines))
+            return
+
+        if command == "/deshacer":
+            undo_id = get_meta(conn, "telegram_last_undo_id")
+            if not undo_id:
+                telegram_send_message(chat_id, "ℹ️ No hay una acción reciente de Telegram que deshacer.")
+                return
+            # Se ejecuta fuera de esta transacción para reutilizar el mismo mecanismo
+            # de deshacer que utiliza la interfaz web.
+        else:
+            telegram_send_message(chat_id, telegram_help_text())
+            return
+
+    if command == "/deshacer":
+        try:
+            result = undo(int(undo_id))
+        except HTTPException as exc:
+            raise ValueError(str(exc.detail))
+        with db() as conn:
+            delete_meta(conn, "telegram_last_undo_id")
+        telegram_send_message(chat_id, "↶ " + result.get("undone", "Cambio deshecho"))
+
+
+def telegram_handle_callback(chat_id, callback):
+    data = callback.get("data", "")
+    if not data.startswith("done:"):
+        telegram_api_request(
+            "answerCallbackQuery",
+            {"callback_query_id": callback["id"], "text": "Acción no reconocida"},
+        )
+        return
+    try:
+        _, pending_raw, person_raw = data.split(":", 2)
+        pending_id = int(pending_raw)
+        person_id = int(person_raw)
+    except (ValueError, TypeError):
+        raise ValueError("Confirmación no válida.")
+
+    with db() as conn:
+        pending = conn.execute(
+            """SELECT * FROM telegram_pending_actions
+               WHERE id=? AND used_at IS NULL""",
+            (pending_id,),
+        ).fetchone()
+        if not pending or pending["chat_id"] != chat_id:
+            telegram_api_request(
+                "answerCallbackQuery",
+                {"callback_query_id": callback["id"], "text": "Esta confirmación ya no está disponible"},
+            )
+            return
+        created_at = datetime.fromisoformat(pending["created_at"])
+        if now_local() - created_at > timedelta(minutes=30):
+            conn.execute(
+                "UPDATE telegram_pending_actions SET used_at=? WHERE id=?",
+                (iso_now(), pending_id),
+            )
+            telegram_api_request(
+                "answerCallbackQuery",
+                {"callback_query_id": callback["id"], "text": "La confirmación ha caducado"},
+            )
+            return
+
+        payload = json.loads(pending["payload"])
+        result = complete_task_action(conn, int(payload["task_id"]), person_id)
+        conn.execute(
+            "UPDATE telegram_pending_actions SET used_at=? WHERE id=?",
+            (iso_now(), pending_id),
+        )
+        telegram_store_last_undo(conn, result["undo_id"])
+
+    telegram_api_request(
+        "answerCallbackQuery",
+        {"callback_query_id": callback["id"], "text": "Tarea registrada"},
+    )
+    message = callback.get("message") or {}
+    if message.get("message_id"):
+        telegram_api_request(
+            "editMessageReplyMarkup",
+            {
+                "chat_id": str(chat_id),
+                "message_id": str(message["message_id"]),
+                "reply_markup": json.dumps({"inline_keyboard": []}),
+            },
+        )
+    telegram_send_message(
+        chat_id,
+        f'✅ "{result["task_title"]}" completada por {result["person_name"]}.',
+    )
+
+
+def process_telegram_update(update):
+    chat = telegram_update_chat(update)
+    if chat:
+        with db() as conn:
+            remember_telegram_chat(conn, chat)
+            configured = get_meta(conn, "telegram_chat_id")
+        if not configured or int(configured) != int(chat["id"]):
+            return
+
+    if update.get("callback_query"):
+        callback = update["callback_query"]
+        message = callback.get("message") or {}
+        callback_chat = message.get("chat") or {}
+        if not callback_chat:
+            return
+        telegram_handle_callback(int(callback_chat["id"]), callback)
+        return
+
+    message = update.get("message") or update.get("channel_post")
+    if not message or not message.get("text") or not chat:
+        return
+    text = message["text"].strip()
+    if text.startswith("/"):
+        telegram_handle_command(int(chat["id"]), text)
+
+
+def process_telegram_updates(timeout=20):
+    if not TELEGRAM_BOT_TOKEN:
+        return 0
+    with db() as conn:
+        offset = int(get_meta(conn, "telegram_update_offset", "0") or 0)
+
+    updates = telegram_api_request(
+        "getUpdates",
+        {
+            "offset": offset,
+            "limit": 100,
+            "timeout": max(0, int(timeout)),
+            "allowed_updates": json.dumps(
+                ["message", "channel_post", "callback_query", "my_chat_member"]
+            ),
+        },
+    ) or []
+
+    processed = 0
+    for update in updates:
+        update_id = int(update.get("update_id", offset))
+        chat = telegram_update_chat(update)
+        try:
+            process_telegram_update(update)
+        except ValueError as exc:
+            if chat:
+                with db() as conn:
+                    configured = get_meta(conn, "telegram_chat_id")
+                if configured and int(configured) == int(chat["id"]):
+                    telegram_send_message(int(chat["id"]), "⚠️ " + str(exc))
+        except Exception as exc:
+            print(f"Telegram command error: {exc}", flush=True)
+            if chat:
+                try:
+                    with db() as conn:
+                        configured = get_meta(conn, "telegram_chat_id")
+                    if configured and int(configured) == int(chat["id"]):
+                        telegram_send_message(
+                            int(chat["id"]),
+                            "⚠️ No pude procesar ese comando. Revisa /ayuda o prueba de nuevo.",
+                        )
+                except Exception:
+                    pass
+        finally:
+            with db() as conn:
+                set_meta(conn, "telegram_update_offset", update_id + 1)
+        processed += 1
+    return processed
+
+
+def ensure_telegram_bot_identity():
+    info = telegram_api_request("getMe")
+    bot_id = str(info.get("id"))
+    username = info.get("username", "")
+    with db() as conn:
+        previous = get_meta(conn, "telegram_bot_id")
+        if previous and previous != bot_id:
+            delete_meta(conn, "telegram_update_offset")
+            conn.execute("DELETE FROM telegram_chats_seen")
+            delete_meta(conn, "telegram_chat_id")
+            delete_meta(conn, "telegram_chat_title")
+        set_meta(conn, "telegram_bot_id", bot_id)
+        set_meta(conn, "telegram_bot_username", username)
+
+    commands = [
+        {"command": "hoy", "description": "Tareas y eventos de hoy"},
+        {"command": "agenda", "description": "Próximos eventos"},
+        {"command": "pendientes", "description": "Tareas activas"},
+        {"command": "tarea", "description": "Crear una tarea"},
+        {"command": "hecha", "description": "Marcar una tarea como hecha"},
+        {"command": "mover", "description": "Mover una tarea de área"},
+        {"command": "posponer", "description": "Posponer una tarea"},
+        {"command": "evento", "description": "Crear un evento"},
+        {"command": "deshacer", "description": "Deshacer el último cambio del bot"},
+        {"command": "ayuda", "description": "Ver ejemplos de comandos"},
+    ]
+    telegram_api_request(
+        "setMyCommands",
+        {"commands": json.dumps(commands, ensure_ascii=False)},
+    )
+    return info
+
+
 async def telegram_reminder_loop():
+    identity_ready = False
+    last_reminder_check = 0.0
     while True:
         try:
-            await asyncio.to_thread(process_telegram_reminders)
+            if not identity_ready:
+                await asyncio.to_thread(ensure_telegram_bot_identity)
+                identity_ready = True
+
+            await asyncio.to_thread(process_telegram_updates, 20)
+            now_tick = time.monotonic()
+            if now_tick - last_reminder_check >= TELEGRAM_POLL_SECONDS:
+                await asyncio.to_thread(process_telegram_reminders)
+                last_reminder_check = now_tick
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"Telegram reminder error: {exc}", flush=True)
-        await asyncio.sleep(TELEGRAM_POLL_SECONDS)
+            print(f"Telegram worker error: {exc}", flush=True)
+            await asyncio.sleep(5)
 
 
 def task_json(conn, task):
