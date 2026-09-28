@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,10 @@ def client():
     db_path = TEST_DATA / "chores.db"
     if db_path.exists():
         db_path.unlink()
+    attachments = TEST_DATA / "attachments"
+    if attachments.exists():
+        shutil.rmtree(attachments)
+    attachments.mkdir(parents=True, exist_ok=True)
 
     app_module.init_db()
 
