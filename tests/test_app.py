@@ -1358,3 +1358,347 @@ def test_estimated_duration_can_be_changed(client):
     )
     assert updated.status_code == 200
     assert task_from_state(get_state(client), task_id)["estimated_minutes"] == 45
+
+
+def test_vacation_hides_tasks_but_keeps_excluded_area_and_agenda(client):
+    import app as app_module
+
+    base = app_module.today_local()
+    state = get_state(client)
+    included_area = next(a for a in state["areas"] if a["name"] == "Alimentación")
+    excluded_area = next(a for a in state["areas"] if a["name"] == "Piso Fanalwegle")
+
+    included = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Tarea de vacaciones",
+            area_id=included_area["id"],
+            initial_due_date=base.isoformat(),
+            anchor_date=base.isoformat(),
+        ),
+    )
+    excluded = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Tarea que sigue activa",
+            area_id=excluded_area["id"],
+            initial_due_date=base.isoformat(),
+            anchor_date=base.isoformat(),
+        ),
+    )
+    assert included.status_code == 200
+    assert excluded.status_code == 200
+    included_id = included.json()["id"]
+    excluded_id = excluded.json()["id"]
+
+    assert client.post(f"/api/today/{included_id}").status_code == 200
+    assert client.post(f"/api/today/{excluded_id}").status_code == 200
+
+    event_at = (app_module.now_local() + timedelta(days=1)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+    event = client.post(
+        "/api/events",
+        json={
+            "title": "Reunión durante vacaciones",
+            "description": "",
+            "area_id": included_area["id"],
+            "event_at": event_at,
+            "reminders": [60],
+        },
+    )
+    assert event.status_code == 200
+
+    started = client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": (base + timedelta(days=7)).isoformat(),
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [excluded_area["id"]],
+        },
+    )
+    assert started.status_code == 200
+
+    during = get_state(client)
+    assert during["vacation"]["active"] is True
+    assert during["vacation"]["excluded_area_ids"] == [excluded_area["id"]]
+
+    included_task = task_from_state(during, included_id)
+    excluded_task = task_from_state(during, excluded_id)
+    assert included_task["paused"] is True
+    assert included_task["pause"]["source"] == "vacation"
+    assert excluded_task["paused"] is False
+
+    assert all(t["id"] != included_id for t in during["today"])
+    assert any(t["id"] == excluded_id for t in during["today"])
+    assert all(t["id"] != included_id for t in during["suggested"])
+    assert all(t["id"] != included_id for t in during["upcoming"])
+    assert any(e["id"] == event.json()["id"] for e in during["event_upcoming"])
+
+    # La cola se conserva internamente y reaparecerá tras la pausa.
+    with app_module.db() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM today_queue WHERE task_id=?", (included_id,)
+        ).fetchone() is not None
+
+
+def test_continue_cycle_vacation_shifts_due_dates_on_return(client, monkeypatch):
+    import app as app_module
+
+    base = app_module.today_local()
+    area = next(a for a in get_state(client)["areas"] if a["name"] == "Alimentación")
+    excluded_area = next(
+        a for a in get_state(client)["areas"] if a["name"] == "Piso Fanalwegle"
+    )
+
+    cycle = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Ciclo pausado",
+            area_id=area["id"],
+            frequency_days=10,
+            initial_due_date=(base + timedelta(days=2)).isoformat(),
+            anchor_date=(base + timedelta(days=2)).isoformat(),
+        ),
+    )
+    fixed = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Fija pausada",
+            area_id=area["id"],
+            recurrence_type="fixed",
+            frequency_days=7,
+            initial_due_date=(base + timedelta(days=2)).isoformat(),
+            anchor_date=(base + timedelta(days=2)).isoformat(),
+        ),
+    )
+    excluded = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Ciclo excluido",
+            area_id=excluded_area["id"],
+            frequency_days=10,
+            initial_due_date=(base + timedelta(days=2)).isoformat(),
+            anchor_date=(base + timedelta(days=2)).isoformat(),
+        ),
+    )
+    assert cycle.status_code == fixed.status_code == excluded.status_code == 200
+
+    return_day = base + timedelta(days=5)
+    started = client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": return_day.isoformat(),
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [excluded_area["id"]],
+        },
+    )
+    assert started.status_code == 200
+
+    monkeypatch.setattr(app_module, "today_local", lambda: return_day)
+    after = get_state(client)
+    assert after["vacation"]["active"] is False
+
+    cycle_task = task_from_state(after, cycle.json()["id"])
+    fixed_task = task_from_state(after, fixed.json()["id"])
+    excluded_task = task_from_state(after, excluded.json()["id"])
+
+    assert cycle_task["next_due"] == (base + timedelta(days=7)).isoformat()
+    assert fixed_task["next_due"] == (base + timedelta(days=7)).isoformat()
+    assert excluded_task["next_due"] == (base + timedelta(days=2)).isoformat()
+
+
+def test_keep_calendar_vacation_does_not_shift_due_dates(client, monkeypatch):
+    import app as app_module
+
+    base = app_module.today_local()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Calendario conservado",
+            frequency_days=10,
+            initial_due_date=(base + timedelta(days=2)).isoformat(),
+            anchor_date=(base + timedelta(days=2)).isoformat(),
+        ),
+    )
+    task_id = created.json()["id"]
+
+    return_day = base + timedelta(days=5)
+    assert client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": return_day.isoformat(),
+            "resume_mode": "keep_calendar",
+            "excluded_area_ids": [],
+        },
+    ).status_code == 200
+
+    monkeypatch.setattr(app_module, "today_local", lambda: return_day)
+    task = task_from_state(get_state(client), task_id)
+    assert task["paused"] is False
+    assert task["next_due"] == (base + timedelta(days=2)).isoformat()
+    assert task["need_score"] == 100
+
+
+def test_task_pause_blocks_actions_and_restores_today_queue(client, monkeypatch):
+    import app as app_module
+
+    base = app_module.today_local()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Pausa individual",
+            frequency_days=7,
+            initial_due_date=(base + timedelta(days=1)).isoformat(),
+            anchor_date=(base + timedelta(days=1)).isoformat(),
+        ),
+    )
+    task_id = created.json()["id"]
+    assert client.post(f"/api/today/{task_id}").status_code == 200
+
+    return_day = base + timedelta(days=3)
+    paused = client.post(
+        f"/api/tasks/{task_id}/pause",
+        json={
+            "return_date": return_day.isoformat(),
+            "resume_mode": "continue_cycle",
+        },
+    )
+    assert paused.status_code == 200
+
+    during = get_state(client)
+    task = task_from_state(during, task_id)
+    assert task["paused"] is True
+    assert task["pause"]["source"] == "task"
+    assert all(t["id"] != task_id for t in during["today"])
+
+    assert client.post(f"/api/today/{task_id}").status_code == 409
+    assert client.post(
+        f"/api/tasks/{task_id}/postpone",
+        json={"due_date": (base + timedelta(days=10)).isoformat()},
+    ).status_code == 409
+    assert client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": during["people"][0]["id"]},
+    ).status_code == 409
+
+    monkeypatch.setattr(app_module, "today_local", lambda: return_day)
+    after = get_state(client)
+    task = task_from_state(after, task_id)
+    assert task["paused"] is False
+    assert task["next_due"] == (base + timedelta(days=4)).isoformat()
+    assert any(t["id"] == task_id for t in after["today"])
+
+
+def test_area_pause_keep_calendar_and_resume(client, monkeypatch):
+    import app as app_module
+
+    base = app_module.today_local()
+    area = next(a for a in get_state(client)["areas"] if a["name"] == "Vehículos")
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Revisar vehículo",
+            area_id=area["id"],
+            initial_due_date=(base + timedelta(days=1)).isoformat(),
+            anchor_date=(base + timedelta(days=1)).isoformat(),
+        ),
+    )
+    task_id = created.json()["id"]
+
+    return_day = base + timedelta(days=4)
+    paused = client.post(
+        f"/api/areas/{area['id']}/pause",
+        json={
+            "return_date": return_day.isoformat(),
+            "resume_mode": "keep_calendar",
+        },
+    )
+    assert paused.status_code == 200
+
+    during = get_state(client)
+    paused_area = next(a for a in during["areas"] if a["id"] == area["id"])
+    task = task_from_state(during, task_id)
+    assert paused_area["paused"] is True
+    assert paused_area["pause"]["source"] == "area"
+    assert task["paused"] is True
+    assert task["pause"]["source"] == "area"
+
+    monkeypatch.setattr(app_module, "today_local", lambda: return_day)
+    after = get_state(client)
+    task = task_from_state(after, task_id)
+    area_after = next(a for a in after["areas"] if a["id"] == area["id"])
+    assert task["paused"] is False
+    assert area_after["paused"] is False
+    assert task["next_due"] == (base + timedelta(days=1)).isoformat()
+
+
+def test_pause_overlap_is_rejected_unless_area_is_excluded(client):
+    import app as app_module
+
+    base = app_module.today_local()
+    area = next(a for a in get_state(client)["areas"] if a["name"] == "Vehículos")
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(title="Tarea ya pausada", area_id=area["id"]),
+    )
+    task_id = created.json()["id"]
+    return_day = (base + timedelta(days=5)).isoformat()
+
+    assert client.post(
+        f"/api/tasks/{task_id}/pause",
+        json={"return_date": return_day, "resume_mode": "continue_cycle"},
+    ).status_code == 200
+
+    blocked = client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": return_day,
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [],
+        },
+    )
+    assert blocked.status_code == 409
+
+    allowed = client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": return_day,
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [area["id"]],
+        },
+    )
+    assert allowed.status_code == 200
+
+
+def test_vacation_rejects_invalid_return_date_mode_and_area(client):
+    import app as app_module
+
+    today = app_module.today_local().isoformat()
+    assert client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": today,
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [],
+        },
+    ).status_code == 400
+
+    future = (app_module.today_local() + timedelta(days=2)).isoformat()
+    assert client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": future,
+            "resume_mode": "inventado",
+            "excluded_area_ids": [],
+        },
+    ).status_code == 400
+
+    assert client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": future,
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [999999],
+        },
+    ).status_code == 400
