@@ -258,6 +258,39 @@ Desde Telegram:
 
 La categoría de una tarea sigue siendo libre. **Vacaciones-Viajes** aparece ahora entre las sugerencias junto con las categorías ya utilizadas.
 
+## Configuración desde la web
+
+Casa Tareas incluye una pantalla **⚙ Configuración**, accesible desde el engranaje de la cabecera. Los ajustes se guardan en `data/chores.db` y se aplican sin recrear el contenedor.
+
+Desde esta pantalla se puede cambiar:
+
+- zona horaria;
+- frecuencia de revisión de recordatorios de Telegram;
+- intervalo de sincronización iCal;
+- tamaño máximo de documentos adjuntos;
+- token del bot de Telegram.
+
+### Telegram sin editar `.env`
+
+El flujo recomendado es:
+
+1. Crear el bot con **@BotFather** y copiar el token.
+2. Abrir **⚙ Configuración → Telegram**.
+3. Pegar el token y pulsar **Guardar y validar**.
+4. Casa Tareas consulta `getMe` y configura los comandos del bot antes de guardar el secreto.
+5. Añadir el bot al grupo de Telegram y enviar `/casa`.
+6. Volver a Configuración o Agenda y pulsar **Detectar grupos** para elegirlo.
+
+No hace falta reiniciar Docker. El worker de Telegram se inicia o reinicia automáticamente cuando se guarda o sustituye el token.
+
+El token es **write-only** desde la perspectiva de la interfaz: las APIs de estado y configuración nunca devuelven su contenido. Si se guarda desde la web, queda almacenado dentro de `data/chores.db`, por lo que las copias de seguridad de `data/` deben tratarse como sensibles.
+
+`TELEGRAM_BOT_TOKEN` en `.env` sigue estando soportado como opción de administración. Si existe, tiene prioridad y la interfaz impide sobrescribirlo o borrarlo para evitar dos fuentes de configuración.
+
+La pantalla muestra también diagnóstico básico: bot activo, grupo seleccionado, estado del worker, último contacto con Telegram, versión, calendarios externos y número de documentos.
+
+> Casa Tareas no implementa autenticación de usuarios. Mantén la aplicación en una red privada de confianza, especialmente si almacenas el token de Telegram desde la web.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
