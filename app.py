@@ -990,6 +990,9 @@ def normalize_reminders(values):
 def event_json(conn, event):
     d = dict(event)
     d["active"] = bool(d["active"])
+    d["external"] = False
+    d["source"] = "local"
+    d["all_day"] = False
     try:
         d["reminders"] = normalize_reminders(json.loads(d.pop("reminders_json") or "[]"))
     except (json.JSONDecodeError, TypeError):
@@ -2557,10 +2560,27 @@ def state():
                 "SELECT * FROM events WHERE active=1 ORDER BY event_at,id"
             ).fetchall()
         ]
+        external_events = [
+            external_event_json(conn, r)
+            for r in conn.execute(
+                """SELECT * FROM calendar_external_events
+                   WHERE start_at>=?
+                   ORDER BY start_at,id""",
+                (
+                    datetime.combine(
+                        today_local() - timedelta(days=14),
+                        datetime.min.time(),
+                        tzinfo=TZ,
+                    ).isoformat(timespec="minutes"),
+                ),
+            ).fetchall()
+        ]
+        agenda_events = events + external_events
+        agenda_events.sort(key=lambda e: (e["event_at"], e["title"].casefold()))
         event_today = []
         event_upcoming = []
         today = today_local()
-        for event in events:
+        for event in agenda_events:
             event_day = normalize_event_at(event["event_at"]).date()
             if event_day == today:
                 event_today.append(event)
@@ -2627,6 +2647,20 @@ def state():
                 (cutoff,),
             ).fetchall()
         ]
+        calendar_subscriptions = [
+            calendar_subscription_json(conn, r)
+            for r in conn.execute(
+                """SELECT * FROM calendar_subscriptions
+                   ORDER BY active DESC,name COLLATE NOCASE,id"""
+            ).fetchall()
+        ]
+        activity = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT * FROM activity_log
+                   ORDER BY created_at DESC,id DESC LIMIT 100"""
+            ).fetchall()
+        ]
         return {
             "people": people,
             "people_all": people_all,
@@ -2640,6 +2674,9 @@ def state():
             "inventory_all": inventory_all,
             "shopping_list": shopping_list,
             "events": events,
+            "external_events": external_events,
+            "agenda_events": agenda_events,
+            "calendar_subscriptions": calendar_subscriptions,
             "event_today": event_today,
             "event_upcoming": event_upcoming,
             "alerts_due": alerts_due,
@@ -2647,6 +2684,7 @@ def state():
             "telegram": telegram_status(conn),
             "history": history,
             "stats": stats,
+            "activity": activity,
             "last_undo": latest_undo(conn),
         }
 
