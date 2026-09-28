@@ -479,35 +479,6 @@ def delete_task_permanently(task_id: int):
         return {"ok": True}
 
 
-@app.post("/api/today/{task_id}")
-def add_today(task_id: int):
-    with db() as conn:
-        task = task_row(conn, task_id)
-        if not task["active"]:
-            raise HTTPException(400, "La tarea está archivada")
-        existing = conn.execute(
-            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
-        ).fetchone()
-        if existing:
-            # Idempotente: dos eventos drop nunca añaden dos tareas.
-            return {"ok": True, "undo_id": None, "already_today": True}
-
-        pos = conn.execute(
-            "SELECT COALESCE(MAX(position),0)+1 FROM today_queue"
-        ).fetchone()[0]
-        conn.execute(
-            "INSERT INTO today_queue(task_id,position,forced,added_at) VALUES(?,?,1,?)",
-            (task_id, pos, iso_now()),
-        )
-        undo_id = record_undo(
-            conn,
-            "add_today",
-            {"task_id": task_id},
-            f'Añadida a Hoy: "{task["title"]}"',
-        )
-        return {"ok": True, "undo_id": undo_id, "already_today": False}
-
-
 @app.post("/api/today/reorder")
 def reorder_today(payload: ReorderIn):
     with db() as conn:
@@ -538,6 +509,37 @@ def reorder_today(payload: ReorderIn):
             "Reordenada la cola de Hoy",
         )
         return {"ok": True, "undo_id": undo_id}
+
+
+@app.post("/api/today/{task_id}")
+def add_today(task_id: int):
+    with db() as conn:
+        task = task_row(conn, task_id)
+        if not task["active"]:
+            raise HTTPException(400, "La tarea está archivada")
+        existing = conn.execute(
+            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if existing:
+            # Idempotente: dos eventos drop nunca añaden dos tareas.
+            return {"ok": True, "undo_id": None, "already_today": True}
+
+        pos = conn.execute(
+            "SELECT COALESCE(MAX(position),0)+1 FROM today_queue"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO today_queue(task_id,position,forced,added_at) VALUES(?,?,1,?)",
+            (task_id, pos, iso_now()),
+        )
+        undo_id = record_undo(
+            conn,
+            "add_today",
+            {"task_id": task_id},
+            f'Añadida a Hoy: "{task["title"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id, "already_today": False}
+
+
 
 
 @app.post("/api/tasks/{task_id}/postpone")
