@@ -2757,6 +2757,126 @@ def test_telegram():
     return {"ok": True, "chat_title": title}
 
 
+def validate_calendar_area(conn, area_id):
+    if area_id is None:
+        return
+    area = conn.execute(
+        "SELECT id FROM areas WHERE id=? AND active=1",
+        (area_id,),
+    ).fetchone()
+    if not area:
+        raise HTTPException(400, "Área no válida o archivada")
+
+
+@app.post("/api/calendars")
+def create_calendar_subscription(payload: CalendarSubscriptionIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del calendario no puede estar vacío")
+    url = normalize_calendar_url(payload.url)
+    with db() as conn:
+        validate_calendar_area(conn, payload.area_id)
+        cur = conn.execute(
+            """INSERT INTO calendar_subscriptions(
+               name,url,area_id,active,created_at,updated_at
+               ) VALUES(?,?,?,1,?,?)""",
+            (name, url, payload.area_id, iso_now(), iso_now()),
+        )
+        subscription_id = cur.lastrowid
+        log_activity(
+            conn,
+            "calendar_added",
+            f'Añadido el calendario externo "{name}"',
+            entity_type="calendar",
+            entity_id=subscription_id,
+        )
+    try:
+        count = sync_calendar_subscription(subscription_id)
+        return {"id": subscription_id, "synced": True, "event_count": count}
+    except RuntimeError as exc:
+        return {
+            "id": subscription_id,
+            "synced": False,
+            "error": str(exc),
+            "event_count": 0,
+        }
+
+
+@app.put("/api/calendars/{subscription_id}")
+def update_calendar_subscription(
+    subscription_id: int,
+    payload: CalendarSubscriptionIn,
+):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del calendario no puede estar vacío")
+    url = normalize_calendar_url(payload.url)
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM calendar_subscriptions WHERE id=?",
+            (subscription_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(404, "Calendario externo no encontrado")
+        validate_calendar_area(conn, payload.area_id)
+        conn.execute(
+            """UPDATE calendar_subscriptions
+               SET name=?,url=?,area_id=?,active=1,updated_at=?
+               WHERE id=?""",
+            (name, url, payload.area_id, iso_now(), subscription_id),
+        )
+        log_activity(
+            conn,
+            "calendar_updated",
+            f'Actualizado el calendario externo "{name}"',
+            entity_type="calendar",
+            entity_id=subscription_id,
+        )
+    try:
+        count = sync_calendar_subscription(subscription_id)
+        return {"ok": True, "synced": True, "event_count": count}
+    except RuntimeError as exc:
+        return {"ok": True, "synced": False, "error": str(exc)}
+
+
+@app.post("/api/calendars/sync")
+def sync_calendars_now():
+    sync_all_calendars()
+    return {"ok": True}
+
+
+@app.post("/api/calendars/{subscription_id}/sync")
+def sync_one_calendar(subscription_id: int):
+    try:
+        count = sync_calendar_subscription(subscription_id)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    return {"ok": True, "event_count": count}
+
+
+@app.delete("/api/calendars/{subscription_id}")
+def delete_calendar_subscription(subscription_id: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM calendar_subscriptions WHERE id=?",
+            (subscription_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Calendario externo no encontrado")
+        conn.execute(
+            "DELETE FROM calendar_subscriptions WHERE id=?",
+            (subscription_id,),
+        )
+        log_activity(
+            conn,
+            "calendar_deleted",
+            f'Eliminado el calendario externo "{row["name"]}"',
+            entity_type="calendar",
+            entity_id=subscription_id,
+        )
+    return {"ok": True}
+
+
 @app.post("/api/events")
 def create_event(payload: EventIn):
     event_at = normalize_event_at(payload.event_at)
