@@ -449,7 +449,9 @@ def test_area_cannot_be_deleted_until_all_tasks_are_moved(client):
 
     blocked = client.delete(f"/api/areas/{source_id}/hard")
     assert blocked.status_code == 409
-    assert "2 tarea(s) asociada(s)" in blocked.json()["detail"]
+    detail = blocked.json()["detail"]
+    assert "2 tarea(s)" in detail
+    assert "0 evento(s)" in detail
 
     moved_first = client.put(
         f"/api/tasks/{first_id}/area",
