@@ -95,6 +95,25 @@ def init_db():
           FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
           FOREIGN KEY(owner_person_id) REFERENCES people(id) ON DELETE SET NULL
         );
+        CREATE TABLE IF NOT EXISTS events(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          area_id INTEGER,
+          event_at TEXT NOT NULL,
+          reminders_json TEXT NOT NULL DEFAULT '[]',
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS event_alert_ack(
+          event_id INTEGER NOT NULL,
+          reminder_minutes INTEGER NOT NULL,
+          acknowledged_at TEXT NOT NULL,
+          PRIMARY KEY(event_id, reminder_minutes),
+          FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS completions(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           task_id INTEGER NOT NULL,
@@ -131,6 +150,7 @@ def init_db():
           value TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_completions_task ON completions(task_id, completed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_events_at ON events(active, event_at);
         CREATE INDEX IF NOT EXISTS idx_undo_open ON undo_actions(undone_at, id DESC);
         """)
 
@@ -377,6 +397,84 @@ def area_json(conn, area):
     return d
 
 
+def normalize_event_at(value):
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Fecha y hora del evento no válidas")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=TZ)
+    else:
+        parsed = parsed.astimezone(TZ)
+    return parsed
+
+
+def normalize_reminders(values):
+    clean = []
+    for value in values or []:
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Recordatorio no válido")
+        if minutes < 0 or minutes > 525600:
+            raise HTTPException(400, "El recordatorio debe estar entre 0 minutos y 1 año")
+        if minutes not in clean:
+            clean.append(minutes)
+    return sorted(clean, reverse=True)
+
+
+def event_json(conn, event):
+    d = dict(event)
+    d["active"] = bool(d["active"])
+    try:
+        d["reminders"] = normalize_reminders(json.loads(d.pop("reminders_json") or "[]"))
+    except (json.JSONDecodeError, TypeError):
+        d["reminders"] = []
+    area = None
+    if d.get("area_id"):
+        row = conn.execute("SELECT * FROM areas WHERE id=?", (d["area_id"],)).fetchone()
+        if row:
+            area = dict(row)
+            area["active"] = bool(area["active"])
+    d["area"] = area
+    return d
+
+
+def due_event_alerts(conn, events):
+    now = now_local()
+    cutoff = now - timedelta(hours=24)
+    alerts = []
+    for event in events:
+        if not event["active"]:
+            continue
+        event_at = normalize_event_at(event["event_at"])
+        if event_at < cutoff:
+            continue
+        for minutes in event.get("reminders", []):
+            trigger = event_at - timedelta(minutes=minutes)
+            if now < trigger:
+                continue
+            acknowledged = conn.execute(
+                """SELECT 1 FROM event_alert_ack
+                   WHERE event_id=? AND reminder_minutes=?""",
+                (event["id"], minutes),
+            ).fetchone()
+            if acknowledged:
+                continue
+            alerts.append(
+                {
+                    "event_id": event["id"],
+                    "title": event["title"],
+                    "event_at": event["event_at"],
+                    "area": event.get("area"),
+                    "reminder_minutes": minutes,
+                    "trigger_at": trigger.isoformat(timespec="minutes"),
+                }
+            )
+    alerts.sort(key=lambda x: (x["event_at"], x["reminder_minutes"]))
+    return alerts
+
+
 def task_json(conn, task):
     d = dict(task)
     d["active"] = bool(d["active"])
@@ -464,6 +562,14 @@ class AreaMoveIn(BaseModel):
     area_id: int | None = None
 
 
+class EventIn(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = ""
+    area_id: int | None = None
+    event_at: str
+    reminders: list[int] = Field(default_factory=lambda: [1440])
+
+
 class CompleteIn(BaseModel):
     person_id: int
 
@@ -494,7 +600,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.4.0"}
+    return {"ok": True, "version": "0.5.0"}
 
 
 @app.get("/api/state")
@@ -521,6 +627,22 @@ def state():
                 "SELECT * FROM tasks ORDER BY active DESC,category,title"
             ).fetchall()
         ]
+        events = [
+            event_json(conn, r)
+            for r in conn.execute(
+                "SELECT * FROM events WHERE active=1 ORDER BY event_at,id"
+            ).fetchall()
+        ]
+        event_today = []
+        event_upcoming = []
+        today = today_local()
+        for event in events:
+            event_day = normalize_event_at(event["event_at"]).date()
+            if event_day == today:
+                event_today.append(event)
+            elif event_day > today:
+                event_upcoming.append(event)
+        alerts_due = due_event_alerts(conn, events)
         today_ids = [
             r["task_id"]
             for r in conn.execute(
@@ -569,10 +691,103 @@ def state():
             "today": today,
             "upcoming": upcoming,
             "tasks": tasks,
+            "events": events,
+            "event_today": event_today,
+            "event_upcoming": event_upcoming,
+            "alerts_due": alerts_due,
             "history": history,
             "stats": stats,
             "last_undo": latest_undo(conn),
         }
+
+
+@app.post("/api/events")
+def create_event(payload: EventIn):
+    event_at = normalize_event_at(payload.event_at)
+    reminders = normalize_reminders(payload.reminders)
+    with db() as conn:
+        if payload.area_id is not None:
+            area = conn.execute(
+                "SELECT id FROM areas WHERE id=? AND active=1",
+                (payload.area_id,),
+            ).fetchone()
+            if not area:
+                raise HTTPException(400, "Área no válida o archivada")
+        cur = conn.execute(
+            """INSERT INTO events(title,description,area_id,event_at,reminders_json,
+               active,created_at,updated_at)
+               VALUES(?,?,?,?,?,1,?,?)""",
+            (
+                payload.title.strip(),
+                payload.description.strip(),
+                payload.area_id,
+                event_at.isoformat(timespec="minutes"),
+                json.dumps(reminders),
+                iso_now(),
+                iso_now(),
+            ),
+        )
+        return {"id": cur.lastrowid}
+
+
+@app.put("/api/events/{event_id}")
+def update_event(event_id: int, payload: EventIn):
+    event_at = normalize_event_at(payload.event_at)
+    reminders = normalize_reminders(payload.reminders)
+    with db() as conn:
+        event = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        if not event:
+            raise HTTPException(404, "Evento no encontrado")
+        if payload.area_id is not None:
+            area = conn.execute(
+                "SELECT id FROM areas WHERE id=? AND active=1",
+                (payload.area_id,),
+            ).fetchone()
+            if not area:
+                raise HTTPException(400, "Área no válida o archivada")
+        conn.execute(
+            """UPDATE events SET title=?,description=?,area_id=?,event_at=?,
+               reminders_json=?,active=1,updated_at=? WHERE id=?""",
+            (
+                payload.title.strip(),
+                payload.description.strip(),
+                payload.area_id,
+                event_at.isoformat(timespec="minutes"),
+                json.dumps(reminders),
+                iso_now(),
+                event_id,
+            ),
+        )
+        conn.execute("DELETE FROM event_alert_ack WHERE event_id=?", (event_id,))
+        return {"ok": True}
+
+
+@app.delete("/api/events/{event_id}")
+def delete_event(event_id: int):
+    with db() as conn:
+        event = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        if not event:
+            raise HTTPException(404, "Evento no encontrado")
+        conn.execute("DELETE FROM events WHERE id=?", (event_id,))
+        return {"ok": True}
+
+
+@app.post("/api/events/{event_id}/reminders/{minutes}/ack")
+def acknowledge_event_reminder(event_id: int, minutes: int):
+    if minutes < 0 or minutes > 525600:
+        raise HTTPException(400, "Recordatorio no válido")
+    with db() as conn:
+        event = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
+        if not event:
+            raise HTTPException(404, "Evento no encontrado")
+        conn.execute(
+            """INSERT INTO event_alert_ack(event_id,reminder_minutes,acknowledged_at)
+               VALUES(?,?,?)
+               ON CONFLICT(event_id,reminder_minutes)
+               DO UPDATE SET acknowledged_at=excluded.acknowledged_at""",
+            (event_id, minutes, iso_now()),
+        )
+        return {"ok": True}
 
 
 @app.post("/api/tasks")
