@@ -2923,6 +2923,7 @@ def create_task(payload: TaskIn):
     anchor = payload.anchor_date or due
     with db() as conn:
         validate_task_responsibility(conn, payload.area_id, payload.owner_person_id)
+        supply_ids = validate_supply_ids(conn, payload.supply_ids)
         cur = conn.execute(
             """INSERT INTO tasks(title,description,category,color,icon,recurrence_type,
                frequency_days,initial_due_date,anchor_date,area_id,owner_person_id,
@@ -2948,7 +2949,16 @@ def create_task(payload: TaskIn):
                 iso_now(),
             ),
         )
-        return {"id": cur.lastrowid}
+        task_id = cur.lastrowid
+        set_task_supplies(conn, task_id, supply_ids)
+        log_activity(
+            conn,
+            "task_created",
+            f'Creada la tarea "{payload.title.strip()}"',
+            entity_type="task",
+            entity_id=task_id,
+        )
+        return {"id": task_id}
 
 
 @app.put("/api/tasks/{task_id}")
@@ -2961,9 +2971,13 @@ def update_task(task_id: int, payload: TaskIn):
         sync_pause_states(conn)
         task = task_row(conn, task_id)
         validate_task_responsibility(conn, payload.area_id, payload.owner_person_id)
+        supply_ids = validate_supply_ids(conn, payload.supply_ids)
         if payload.area_id != task["area_id"]:
             if effective_task_pause(conn, task):
-                raise HTTPException(409, "No se puede mover de área una tarea mientras está pausada")
+                raise HTTPException(
+                    409,
+                    "No se puede mover de área una tarea mientras está pausada",
+                )
             destination_pause = pause_for_area_id(conn, payload.area_id)
             if destination_pause:
                 raise HTTPException(
@@ -2995,6 +3009,14 @@ def update_task(task_id: int, payload: TaskIn):
                 payload.estimated_minutes,
                 task_id,
             ),
+        )
+        set_task_supplies(conn, task_id, supply_ids)
+        log_activity(
+            conn,
+            "task_updated",
+            f'Actualizada la tarea "{payload.title.strip()}"',
+            entity_type="task",
+            entity_id=task_id,
         )
         return {"ok": True}
 
