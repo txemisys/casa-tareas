@@ -1721,12 +1721,35 @@ def telegram_parse_reminders(value):
     return normalize_reminders(result)
 
 
+def telegram_find_inventory_item(conn, query):
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("Indica un producto del inventario.")
+    rows = conn.execute(
+        """SELECT * FROM inventory_items
+           WHERE active=1 ORDER BY name COLLATE NOCASE,id"""
+    ).fetchall()
+    exact = [r for r in rows if r["name"].casefold() == query.casefold()]
+    if exact:
+        return exact[0]
+    matches = [r for r in rows if query.casefold() in r["name"].casefold()]
+    if not matches:
+        raise ValueError(f'No encuentro el producto "{query}".')
+    if len(matches) > 1:
+        names = ", ".join(r["name"] for r in matches[:8])
+        raise ValueError("Hay varios productos que coinciden: " + names)
+    return matches[0]
+
+
 def telegram_help_text():
     return (
         "🏠 Casa Tareas · comandos\n\n"
         "/hoy — tareas y eventos de hoy\n"
         "/agenda — próximos eventos\n"
         "/pendientes [Área] — tareas activas\n"
+        "/comprar — lista de compra\n"
+        "/comprar Producto — añadir producto a Comprar\n"
+        "/stock Producto | hay/poco/falta — actualizar inventario\n"
         "/tarea Título | Área | gestión — crear tarea\n"
         "/hecha Tarea — elegir quién la hizo\n"
         "/mover Tarea | Área — cambiar de área\n"
@@ -1864,6 +1887,8 @@ def telegram_handle_command(chat_id, text):
             "hoy": "/hoy",
             "agenda": "/agenda",
             "pendientes": "/pendientes",
+            "comprar": "/comprar",
+            "stock": "/stock",
             "ayuda": "/ayuda",
         }
         command = aliases.get(sub.casefold(), "/" + sub.casefold())
@@ -1958,6 +1983,79 @@ def telegram_handle_command(chat_id, text):
             if len(rows) > 25:
                 lines.append(f"… y {len(rows)-25} más.")
             telegram_send_message(chat_id, "\n".join(lines))
+            return
+
+        if command == "/comprar":
+            if args:
+                item = telegram_find_inventory_item(conn, args)
+                conn.execute(
+                    """UPDATE inventory_items
+                       SET shopping_requested=1,updated_at=? WHERE id=?""",
+                    (iso_now(), item["id"]),
+                )
+                log_activity(
+                    conn,
+                    "inventory_stock",
+                    f'Añadido a Comprar "{item["name"]}"',
+                    entity_type="inventory",
+                    entity_id=item["id"],
+                )
+                telegram_send_message(chat_id, f'🛒 Añadido a Comprar: {item["name"]}')
+                return
+            rows = conn.execute(
+                """SELECT * FROM inventory_items
+                   WHERE active=1 AND (
+                     shopping_requested=1 OR stock_status IN ('low','out')
+                   )
+                   ORDER BY stock_status DESC,name COLLATE NOCASE"""
+            ).fetchall()
+            if not rows:
+                telegram_send_message(chat_id, "🛒 La lista de compra está vacía.")
+                return
+            lines = ["🛒 Comprar"]
+            for item in rows:
+                state_label = "Falta" if item["stock_status"] == "out" else (
+                    "Poco" if item["stock_status"] == "low" else "Añadido"
+                )
+                qty = f' · {item["purchase_quantity"]}' if item["purchase_quantity"] else ""
+                lines.append(f'• {item["name"]}{qty} · {state_label}')
+            telegram_send_message(chat_id, "\n".join(lines))
+            return
+
+        if command == "/stock":
+            parts = [p.strip() for p in args.split("|", 1)]
+            if len(parts) != 2 or not all(parts):
+                raise ValueError("Uso: /stock Producto | hay/poco/falta")
+            item = telegram_find_inventory_item(conn, parts[0])
+            aliases = {
+                "hay": "ok",
+                "ok": "ok",
+                "poco": "low",
+                "bajo": "low",
+                "falta": "out",
+                "agotado": "out",
+            }
+            status = aliases.get(parts[1].casefold())
+            if not status:
+                raise ValueError("Estado no válido. Usa hay, poco o falta.")
+            requested = 0 if status == "ok" else item["shopping_requested"]
+            conn.execute(
+                """UPDATE inventory_items
+                   SET stock_status=?,shopping_requested=?,updated_at=? WHERE id=?""",
+                (status, requested, iso_now(), item["id"]),
+            )
+            labels = {"ok": "Hay", "low": "Poco", "out": "Falta"}
+            log_activity(
+                conn,
+                "inventory_stock",
+                f'{item["name"]}: {labels[status]}',
+                entity_type="inventory",
+                entity_id=item["id"],
+            )
+            telegram_send_message(
+                chat_id,
+                f'🧴 {item["name"]}: {labels[status]}',
+            )
             return
 
         if command == "/tarea":
@@ -2271,6 +2369,8 @@ def ensure_telegram_bot_identity():
         {"command": "hoy", "description": "Tareas y eventos de hoy"},
         {"command": "agenda", "description": "Próximos eventos"},
         {"command": "pendientes", "description": "Tareas activas"},
+        {"command": "comprar", "description": "Ver o añadir a la lista de compra"},
+        {"command": "stock", "description": "Actualizar existencias"},
         {"command": "tarea", "description": "Crear una tarea"},
         {"command": "hecha", "description": "Marcar una tarea como hecha"},
         {"command": "mover", "description": "Mover una tarea de área"},
