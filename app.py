@@ -426,6 +426,8 @@ def latest_undo(conn):
 def task_need(conn, task):
     if not task["active"] or task["recurrence_type"] == "none":
         return None
+    if effective_task_pause(conn, task):
+        return None
 
     freq = task["frequency_days"]
     if not freq or freq < 1:
@@ -497,6 +499,8 @@ def area_json(conn, area):
         "SELECT COUNT(*) FROM events WHERE area_id=? AND active=1",
         (d["id"],),
     ).fetchone()[0]
+    d["pause"] = effective_area_pause(conn, area)
+    d["paused"] = bool(d["pause"])
     return d
 
 
@@ -1811,6 +1815,8 @@ def task_json(conn, task):
     d["active"] = bool(d["active"])
     due = due_date(conn, task)
     d["next_due"] = due.isoformat() if due else None
+    d["pause"] = effective_task_pause(conn, task)
+    d["paused"] = bool(d["pause"])
     need = task_need(conn, task)
     d["need_score"] = need["score"] if need else None
     d["need_label"] = need["label"] if need else None
@@ -1942,6 +1948,8 @@ class PersonIn(BaseModel):
 async def startup():
     global TELEGRAM_TASK
     init_db()
+    with db() as conn:
+        sync_pause_states(conn)
     if TELEGRAM_BOT_TOKEN:
         TELEGRAM_TASK = asyncio.create_task(telegram_reminder_loop())
 
@@ -1971,6 +1979,7 @@ def health():
 @app.get("/api/state")
 def state():
     with db() as conn:
+        sync_pause_states(conn)
         sync_today(conn)
         people_all = [
             dict(r)
@@ -2015,13 +2024,18 @@ def state():
             ).fetchall()
         ]
         by_id = {t["id"]: t for t in tasks}
-        today = [by_id[i] for i in today_ids if i in by_id and by_id[i]["active"]]
+        today = [
+            by_id[i]
+            for i in today_ids
+            if i in by_id and by_id[i]["active"] and not by_id[i]["paused"]
+        ]
         today_set = set(today_ids)
         suggested = sorted(
             [
                 t
                 for t in tasks
                 if t["active"]
+                and not t["paused"]
                 and t["is_suggested"]
                 and t["id"] not in today_set
             ],
@@ -2036,7 +2050,7 @@ def state():
             [
                 t
                 for t in tasks
-                if t["active"] and t["next_due"] and t["id"] not in today_set
+                if t["active"] and not t["paused"] and t["next_due"] and t["id"] not in today_set
             ],
             key=lambda t: (t["next_due"], t["title"].lower()),
         )
@@ -2076,6 +2090,7 @@ def state():
             "event_today": event_today,
             "event_upcoming": event_upcoming,
             "alerts_due": alerts_due,
+            "vacation": get_vacation(conn),
             "telegram": telegram_status(conn),
             "history": history,
             "stats": stats,
