@@ -29,18 +29,26 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "chores.db"
 ATTACHMENTS_DIR = DATA_DIR / "attachments"
 ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
-MAX_ATTACHMENT_BYTES = max(
+DEFAULT_MAX_ATTACHMENT_BYTES = max(
     1024 * 1024,
     int(os.getenv("MAX_ATTACHMENT_BYTES", str(20 * 1024 * 1024)) or str(20 * 1024 * 1024)),
 )
-TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Zurich"))
+DEFAULT_TIMEZONE_NAME = os.getenv("APP_TIMEZONE", "Europe/Zurich").strip() or "Europe/Zurich"
+DEFAULT_TELEGRAM_POLL_SECONDS = max(
+    30, int(os.getenv("TELEGRAM_POLL_SECONDS", "60") or "60")
+)
+DEFAULT_ICAL_SYNC_MINUTES = max(
+    5, int(os.getenv("ICAL_SYNC_MINUTES", "30") or "30")
+)
+MAX_ATTACHMENT_BYTES = DEFAULT_MAX_ATTACHMENT_BYTES
+TZ = ZoneInfo(DEFAULT_TIMEZONE_NAME)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_POLL_SECONDS = max(30, int(os.getenv("TELEGRAM_POLL_SECONDS", "60") or "60"))
-ICAL_SYNC_MINUTES = max(5, int(os.getenv("ICAL_SYNC_MINUTES", "30") or "30"))
+TELEGRAM_POLL_SECONDS = DEFAULT_TELEGRAM_POLL_SECONDS
+ICAL_SYNC_MINUTES = DEFAULT_ICAL_SYNC_MINUTES
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.0.2")
+app = FastAPI(title="Casa Tareas", version="1.1.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -1097,6 +1105,101 @@ def set_meta(conn, key, value):
 
 def delete_meta(conn, key):
     conn.execute("DELETE FROM app_meta WHERE key=?", (key,))
+
+
+def load_runtime_settings(conn):
+    global TZ, TELEGRAM_POLL_SECONDS, ICAL_SYNC_MINUTES, MAX_ATTACHMENT_BYTES
+
+    timezone_name = get_meta(conn, "setting_timezone", DEFAULT_TIMEZONE_NAME)
+    try:
+        TZ = ZoneInfo(timezone_name)
+    except Exception:
+        timezone_name = DEFAULT_TIMEZONE_NAME
+        TZ = ZoneInfo(DEFAULT_TIMEZONE_NAME)
+        delete_meta(conn, "setting_timezone")
+
+    try:
+        TELEGRAM_POLL_SECONDS = max(
+            30,
+            min(
+                3600,
+                int(
+                    get_meta(
+                        conn,
+                        "setting_telegram_poll_seconds",
+                        DEFAULT_TELEGRAM_POLL_SECONDS,
+                    )
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        TELEGRAM_POLL_SECONDS = DEFAULT_TELEGRAM_POLL_SECONDS
+        delete_meta(conn, "setting_telegram_poll_seconds")
+
+    try:
+        ICAL_SYNC_MINUTES = max(
+            5,
+            min(
+                1440,
+                int(
+                    get_meta(
+                        conn,
+                        "setting_ical_sync_minutes",
+                        DEFAULT_ICAL_SYNC_MINUTES,
+                    )
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        ICAL_SYNC_MINUTES = DEFAULT_ICAL_SYNC_MINUTES
+        delete_meta(conn, "setting_ical_sync_minutes")
+
+    try:
+        MAX_ATTACHMENT_BYTES = max(
+            1024 * 1024,
+            min(
+                500 * 1024 * 1024,
+                int(
+                    get_meta(
+                        conn,
+                        "setting_max_attachment_bytes",
+                        DEFAULT_MAX_ATTACHMENT_BYTES,
+                    )
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        MAX_ATTACHMENT_BYTES = DEFAULT_MAX_ATTACHMENT_BYTES
+        delete_meta(conn, "setting_max_attachment_bytes")
+
+
+def runtime_settings_json():
+    timezone_name = getattr(TZ, "key", str(TZ))
+    return {
+        "timezone": timezone_name,
+        "telegram_poll_seconds": TELEGRAM_POLL_SECONDS,
+        "ical_sync_minutes": ICAL_SYNC_MINUTES,
+        "max_attachment_bytes": MAX_ATTACHMENT_BYTES,
+        "max_attachment_mb": round(MAX_ATTACHMENT_BYTES / (1024 * 1024)),
+    }
+
+
+def telegram_bot_token(conn=None):
+    environment_token = (TELEGRAM_BOT_TOKEN or "").strip()
+    if environment_token:
+        return environment_token
+    if conn is not None:
+        return (get_meta(conn, "telegram_bot_token", "") or "").strip()
+    with db() as local_conn:
+        return (get_meta(local_conn, "telegram_bot_token", "") or "").strip()
+
+
+def telegram_token_source(conn):
+    if (TELEGRAM_BOT_TOKEN or "").strip():
+        return "environment"
+    if (get_meta(conn, "telegram_bot_token", "") or "").strip():
+        return "application"
+    return "none"
 
 
 def parse_pause_date(value, field_name="Fecha de regreso"):
@@ -2655,7 +2758,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.0.2"}
+    return {"ok": True, "version": "1.1.0"}
 
 
 @app.get("/api/state")
