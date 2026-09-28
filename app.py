@@ -2809,6 +2809,137 @@ def acknowledge_event_reminder(event_id: int, minutes: int):
         return {"ok": True}
 
 
+def validate_attachment_entity(conn, entity_type, entity_id):
+    if entity_type == "task":
+        row = conn.execute("SELECT id,title FROM tasks WHERE id=?", (entity_id,)).fetchone()
+        label = row["title"] if row else None
+    elif entity_type == "area":
+        row = conn.execute("SELECT id,name FROM areas WHERE id=?", (entity_id,)).fetchone()
+        label = row["name"] if row else None
+    else:
+        raise HTTPException(400, "Tipo de adjunto no válido")
+    if not row:
+        raise HTTPException(404, "El elemento al que quieres adjuntar el archivo no existe")
+    return label
+
+
+@app.post("/api/attachments")
+async def upload_attachment(
+    entity_type: str = Form(...),
+    entity_id: int = Form(...),
+    file: UploadFile = File(...),
+):
+    with db() as conn:
+        label = validate_attachment_entity(conn, entity_type, entity_id)
+
+    original_name = Path(file.filename or "archivo").name.strip() or "archivo"
+    suffix = Path(original_name).suffix.lower()
+    if len(suffix) > 12 or any(ch not in ".abcdefghijklmnopqrstuvwxyz0123456789" for ch in suffix):
+        suffix = ""
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    path = ATTACHMENTS_DIR / stored_name
+    total = 0
+    try:
+        with path.open("wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_ATTACHMENT_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"El archivo supera el límite de {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB",
+                    )
+                handle.write(chunk)
+    except Exception:
+        if path.exists():
+            path.unlink()
+        raise
+    finally:
+        await file.close()
+
+    if total == 0:
+        if path.exists():
+            path.unlink()
+        raise HTTPException(400, "El archivo está vacío")
+
+    try:
+        with db() as conn:
+            validate_attachment_entity(conn, entity_type, entity_id)
+            cur = conn.execute(
+                """INSERT INTO attachments(
+                   entity_type,entity_id,original_name,stored_name,content_type,
+                   size_bytes,created_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    entity_type,
+                    entity_id,
+                    original_name[:255],
+                    stored_name,
+                    (file.content_type or "application/octet-stream")[:200],
+                    total,
+                    iso_now(),
+                ),
+            )
+            attachment_id = cur.lastrowid
+            log_activity(
+                conn,
+                "attachment_added",
+                f'Adjuntado "{original_name}" a {label}',
+                entity_type=entity_type,
+                entity_id=entity_id,
+            )
+    except Exception:
+        if path.exists():
+            path.unlink()
+        raise
+    return {"id": attachment_id}
+
+
+@app.get("/api/attachments/{attachment_id}/download")
+def download_attachment(attachment_id: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM attachments WHERE id=?",
+            (attachment_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Adjunto no encontrado")
+        data = dict(row)
+    path = ATTACHMENTS_DIR / data["stored_name"]
+    if not path.exists():
+        raise HTTPException(404, "El archivo ya no está disponible en disco")
+    return FileResponse(
+        path,
+        media_type=data["content_type"],
+        filename=data["original_name"],
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.delete("/api/attachments/{attachment_id}")
+def delete_attachment(attachment_id: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM attachments WHERE id=?",
+            (attachment_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Adjunto no encontrado")
+        data = dict(row)
+        conn.execute("DELETE FROM attachments WHERE id=?", (attachment_id,))
+        log_activity(
+            conn,
+            "attachment_deleted",
+            f'Eliminado el adjunto "{data["original_name"]}"',
+            entity_type=data["entity_type"],
+            entity_id=data["entity_id"],
+        )
+    delete_attachment_file(data)
+    return {"ok": True}
+
+
 def validate_inventory_payload(conn, payload: InventoryItemIn):
     if payload.stock_status not in {"ok", "low", "out"}:
         raise HTTPException(400, "Estado de stock no válido")
