@@ -143,6 +143,38 @@ Cada tarea puede tener una **duración estimada**. La interfaz ofrece valores r�
 
 Al completar una tarea de ciclo, su necesidad vuelve al principio del ciclo. Si se pospone una tarea, la necesidad se recalcula respecto a la nueva fecha.
 
+## Modo vacaciones y pausas
+
+Casa Tareas permite pausar temporalmente tareas sin archivarlas ni perder su posición en **Hoy**.
+
+### Modo vacaciones
+
+Desde el **Tablero → Modo vacaciones** se configura una **fecha de regreso**. La pausa termina al comenzar ese día.
+
+Se pueden excluir áreas que deban seguir funcionando durante las vacaciones, por ejemplo pisos en alquiler, Vehículos o Krankenkassen. Las tareas sin área quedan incluidas en la pausa global.
+
+La **Agenda y los eventos no se pausan**: reuniones, citas, vencimientos y recordatorios de Telegram continúan activos.
+
+Mientras una tarea está pausada:
+
+- no aparece en **Hoy**, **Próximamente** ni **Sugeridas ahora**;
+- conserva internamente su posición en Hoy y reaparece al reanudarse;
+- no puede añadirse a Hoy, completarse, posponerse ni moverse a otra área;
+- sigue visible en el catálogo de **Tareas** con la indicación de pausa.
+
+Hay dos modos de reanudación:
+
+- **Continuar ciclo**: los días de pausa no cuentan. Al regresar, la próxima fecha se desplaza por el tiempo realmente pausado. También se desplaza el anclaje de las tareas de calendario fijo.
+- **Mantener calendario**: no se cambian las fechas. Al regresar, una tarea puede aparecer ya pendiente si su fecha cayó durante la pausa.
+
+El modo vacaciones puede terminarse antes de la fecha prevista. En **Continuar ciclo**, solo se descuentan los días que realmente transcurrieron en pausa.
+
+### Pausa por tarea o por área
+
+Desde **Tareas** se puede pausar una tarea individual. Desde **Áreas** se puede pausar un área completa. Estas pausas usan los mismos dos modos de reanudación.
+
+Para evitar dobles desplazamientos de fechas, Casa Tareas no permite superponer dos pausas sobre la misma tarea. Una pausa individual o de área puede coexistir con el modo vacaciones únicamente cuando su área está excluida de la pausa global.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
