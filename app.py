@@ -1562,6 +1562,31 @@ def telegram_status(conn):
     }
 
 
+def settings_json(conn):
+    telegram = telegram_status(conn)
+    calendar_count = conn.execute(
+        "SELECT COUNT(*) FROM calendar_subscriptions WHERE active=1"
+    ).fetchone()[0]
+    attachment_count = conn.execute(
+        "SELECT COUNT(*) FROM attachments"
+    ).fetchone()[0]
+    return {
+        "version": "1.1.0",
+        "runtime": runtime_settings_json(),
+        "telegram": telegram,
+        "calendars": {
+            "subscription_count": calendar_count,
+            "sync_minutes": ICAL_SYNC_MINUTES,
+        },
+        "attachments": {
+            "count": attachment_count,
+            "max_bytes": MAX_ATTACHMENT_BYTES,
+            "max_mb": round(MAX_ATTACHMENT_BYTES / (1024 * 1024)),
+        },
+        "data_path": "data/",
+    }
+
+
 def telegram_api_request(method, payload=None, token=None):
     active_token = (token or telegram_bot_token()).strip()
     if not active_token:
@@ -3015,10 +3040,126 @@ def state():
             "alerts_due": alerts_due,
             "vacation": get_vacation(conn),
             "telegram": telegram_status(conn),
+            "settings": settings_json(conn),
             "history": history,
             "stats": stats,
             "activity": activity,
             "last_undo": latest_undo(conn),
+        }
+
+
+@app.get("/api/settings")
+def get_settings():
+    with db() as conn:
+        return settings_json(conn)
+
+
+@app.put("/api/settings/runtime")
+def update_runtime_settings(payload: RuntimeSettingsIn):
+    global TZ, TELEGRAM_POLL_SECONDS, ICAL_SYNC_MINUTES, MAX_ATTACHMENT_BYTES
+
+    timezone_name = payload.timezone.strip()
+    try:
+        ZoneInfo(timezone_name)
+    except Exception:
+        raise HTTPException(400, "Zona horaria no válida")
+
+    with db() as conn:
+        set_meta(conn, "setting_timezone", timezone_name)
+        set_meta(
+            conn,
+            "setting_telegram_poll_seconds",
+            payload.telegram_poll_seconds,
+        )
+        set_meta(conn, "setting_ical_sync_minutes", payload.ical_sync_minutes)
+        set_meta(
+            conn,
+            "setting_max_attachment_bytes",
+            payload.max_attachment_mb * 1024 * 1024,
+        )
+        load_runtime_settings(conn)
+        log_activity(
+            conn,
+            "settings_updated",
+            "Actualizada la configuración de Casa Tareas",
+            entity_type="settings",
+        )
+        return settings_json(conn)
+
+
+@app.put("/api/settings/telegram-token")
+async def save_telegram_token(payload: TelegramTokenIn):
+    if (TELEGRAM_BOT_TOKEN or "").strip():
+        raise HTTPException(
+            409,
+            "El token está gestionado por TELEGRAM_BOT_TOKEN en el entorno. "
+            "Elimínalo de .env y recrea el contenedor una vez si quieres gestionarlo desde la web.",
+        )
+
+    token = payload.token.strip()
+    if any(ch.isspace() for ch in token):
+        raise HTTPException(400, "El token de Telegram no puede contener espacios")
+
+    try:
+        info = await asyncio.to_thread(
+            telegram_api_request,
+            "getMe",
+            None,
+            token,
+        )
+        await asyncio.to_thread(
+            telegram_api_request,
+            "setMyCommands",
+            {"commands": json.dumps(telegram_command_definitions(), ensure_ascii=False)},
+            token,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(400, f"Telegram no aceptó el token: {exc}")
+
+    await stop_telegram_worker()
+    with db() as conn:
+        set_meta(conn, "telegram_bot_token", token)
+        apply_telegram_identity(conn, info)
+        username = info.get("username", "")
+        log_activity(
+            conn,
+            "telegram_configured",
+            f'Telegram configurado{f" para @{username}" if username else ""}',
+            entity_type="settings",
+        )
+    await restart_telegram_worker()
+
+    with db() as conn:
+        return {
+            "ok": True,
+            "telegram": telegram_status(conn),
+        }
+
+
+@app.delete("/api/settings/telegram-token")
+async def delete_telegram_token():
+    if (TELEGRAM_BOT_TOKEN or "").strip():
+        raise HTTPException(
+            409,
+            "El token está gestionado por TELEGRAM_BOT_TOKEN en el entorno y no puede borrarse desde la web.",
+        )
+
+    await stop_telegram_worker()
+    with db() as conn:
+        had_token = bool(get_meta(conn, "telegram_bot_token", ""))
+        delete_meta(conn, "telegram_bot_token")
+        clear_telegram_runtime_state(conn, clear_seen=True)
+        if had_token:
+            log_activity(
+                conn,
+                "telegram_disconnected",
+                "Eliminada la configuración del bot de Telegram",
+                entity_type="settings",
+            )
+        return {
+            "ok": True,
+            "already_empty": not had_token,
+            "telegram": telegram_status(conn),
         }
 
 
@@ -3057,6 +3198,7 @@ def configure_telegram_chat(payload: TelegramChatIn):
     with db() as conn:
         set_meta(conn, "telegram_chat_id", payload.chat_id)
         set_meta(conn, "telegram_chat_title", title)
+        set_meta(conn, "telegram_last_contact_at", iso_now())
     return {"ok": True, "chat_id": payload.chat_id, "chat_title": title}
 
 
@@ -3087,6 +3229,8 @@ def test_telegram():
         )
     except RuntimeError as exc:
         raise HTTPException(502, str(exc))
+    with db() as conn:
+        set_meta(conn, "telegram_last_contact_at", iso_now())
     return {"ok": True, "chat_title": title}
 
 
