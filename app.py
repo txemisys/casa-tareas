@@ -3442,8 +3442,16 @@ def archive_task(task_id: int):
 @app.delete("/api/tasks/{task_id}/hard")
 def delete_task_permanently(task_id: int):
     with db() as conn:
-        task_row(conn, task_id)
+        task = task_row(conn, task_id)
+        delete_attachments_for(conn, "task", task_id)
         conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        log_activity(
+            conn,
+            "task_deleted",
+            f'Eliminada definitivamente la tarea "{task["title"]}"',
+            entity_type="task",
+            entity_id=task_id,
+        )
         return {"ok": True}
 
 
@@ -3754,13 +3762,24 @@ def delete_area_permanently(area_id: int):
             "SELECT COUNT(*) FROM events WHERE area_id=? AND active=1",
             (area_id,),
         ).fetchone()[0]
-        if task_count or event_count:
+        attachment_count = conn.execute(
+            "SELECT COUNT(*) FROM attachments WHERE entity_type='area' AND entity_id=?",
+            (area_id,),
+        ).fetchone()[0]
+        if task_count or event_count or attachment_count:
             raise HTTPException(
                 409,
-                f"El área todavía tiene {task_count} tarea(s) y {event_count} evento(s) asociado(s). Muévelos antes de eliminarla.",
+                f"El área todavía tiene {task_count} tarea(s), {event_count} evento(s) y {attachment_count} documento(s). Muévelos o elimínalos antes de eliminarla.",
             )
 
         conn.execute("DELETE FROM areas WHERE id=?", (area_id,))
+        log_activity(
+            conn,
+            "area_deleted",
+            f'Eliminada definitivamente el área "{area["name"]}"',
+            entity_type="area",
+            entity_id=area_id,
+        )
         return {"ok": True}
 
 
