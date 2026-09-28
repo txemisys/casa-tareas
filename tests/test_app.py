@@ -688,3 +688,32 @@ def test_event_rejects_invalid_date_area_and_reminder(client):
     base["area_id"] = None
     base["reminders"] = [-1]
     assert client.post("/api/events", json=base).status_code == 400
+
+
+def test_area_with_linked_event_cannot_be_deleted(client):
+    import app as app_module
+
+    state = get_state(client)
+    area_id = state["areas"][0]["id"]
+    event_at = (app_module.now_local() + timedelta(days=1)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+
+    created = client.post(
+        "/api/events",
+        json={
+            "title": "Reunión del área",
+            "description": "",
+            "area_id": area_id,
+            "event_at": event_at,
+            "reminders": [60],
+        },
+    )
+    assert created.status_code == 200
+
+    area = next(a for a in get_state(client)["areas"] if a["id"] == area_id)
+    assert area["event_count"] == 1
+
+    blocked = client.delete(f"/api/areas/{area_id}/hard")
+    assert blocked.status_code == 409
+    assert "1 evento(s)" in blocked.json()["detail"]
