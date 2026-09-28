@@ -98,7 +98,29 @@ docker compose up -d --build
 
 ### Funcionamiento
 
-El contenedor revisa los recordatorios cada 60 segundos por defecto. El intervalo puede cambiarse con `TELEGRAM_POLL_SECONDS`.
+El bot es bidireccional: además de enviar recordatorios, acepta comandos **únicamente desde el chat seleccionado en Casa Tareas**. Mensajes de otros grupos o chats se registran para poder detectarlos, pero no pueden modificar datos.
+
+Comandos principales:
+
+```text
+/hoy
+/agenda
+/pendientes Piso Fanalwegle
+/tarea Revisar contrato | Piso Fanalwegle | gestión
+/hecha Sacar basura
+/mover Revisar seguro | Krankenkassen
+/renombrar Revisar contrato | Revisar contrato anual
+/posponer Limpiar baño | mañana
+/evento Reunión propietarios | 2026-11-12 19:00 | Piso Im Gapetsch | 1d,2h
+/deshacer
+/ayuda
+```
+
+También se admite el prefijo `/casa`, por ejemplo `/casa hecha Sacar basura` o `/casa añade Revisar contrato | Piso Fanalwegle | gestión`.
+
+`/hecha` no intenta adivinar quién realizó la tarea: Telegram muestra botones con las personas activas y la confirmación solo puede utilizarse una vez. No existen comandos de borrado desde Telegram.
+
+El worker mantiene en SQLite el último `update_id` procesado de Telegram, por lo que un reinicio de Docker no vuelve a ejecutar comandos antiguos. El contenedor revisa los recordatorios cada 60 segundos por defecto; el intervalo puede cambiarse con `TELEGRAM_POLL_SECONDS`.
 
 Los envíos realizados se registran en SQLite para evitar duplicados después de un reinicio. Si el servidor estuvo apagado y varios avisos de un mismo evento ya han vencido, Casa Tareas envía el más reciente y marca los anteriores como procesados, evitando una ráfaga de mensajes atrasados.
 
