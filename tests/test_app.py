@@ -2109,3 +2109,72 @@ def test_telegram_inventory_commands(client, monkeypatch):
         x["name"] == "Detergente"
         for x in get_state(client)["shopping_list"]
     )
+
+
+def test_remove_from_today_preserves_schedule_and_is_undoable(client):
+    import app as app_module
+
+    base = app_module.today_local()
+    due = (base + timedelta(days=5)).isoformat()
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Seleccionada por error",
+            recurrence_type="cycle",
+            frequency_days=14,
+            initial_due_date=due,
+            anchor_date=due,
+            estimated_minutes=20,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    added = client.post(f"/api/today/{task_id}")
+    assert added.status_code == 200
+
+    before = get_state(client)
+    task_before = task_from_state(before, task_id)
+    today_before = [t["id"] for t in before["today"]]
+    assert task_id in today_before
+    assert task_before["next_due"] == due
+    recurrence_before = task_before["recurrence_type"]
+    need_before = task_before["need_score"]
+
+    removed = client.delete(f"/api/today/{task_id}")
+    assert removed.status_code == 200
+    assert removed.json()["already_removed"] is False
+    assert removed.json()["undo_id"] is not None
+
+    after = get_state(client)
+    task_after = task_from_state(after, task_id)
+    assert all(t["id"] != task_id for t in after["today"])
+    assert any(t["id"] == task_id for t in after["upcoming"])
+    assert task_after["next_due"] == due
+    assert task_after["recurrence_type"] == recurrence_before
+    assert task_after["need_score"] == need_before
+
+    undone = client.post(f"/api/undo/{removed.json()['undo_id']}")
+    assert undone.status_code == 200
+    restored = get_state(client)
+    assert [t["id"] for t in restored["today"]] == today_before
+    restored_task = task_from_state(restored, task_id)
+    assert restored_task["next_due"] == due
+    assert restored_task["recurrence_type"] == recurrence_before
+
+
+def test_remove_from_today_is_idempotent(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(title="No estaba en Hoy"),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    removed = client.delete(f"/api/today/{task_id}")
+    assert removed.status_code == 200
+    assert removed.json() == {
+        "ok": True,
+        "undo_id": None,
+        "already_removed": True,
+    }
