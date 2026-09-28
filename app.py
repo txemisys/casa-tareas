@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -18,7 +19,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "chores.db"
 TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Zurich"))
 
-app = FastAPI(title="Casa Tareas", version="0.1.0")
+app = FastAPI(title="Casa Tareas", version="0.2.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -90,11 +91,24 @@ def init_db():
         CREATE TABLE IF NOT EXISTS today_queue(
           task_id INTEGER PRIMARY KEY,
           position REAL NOT NULL,
-          forced INTEGER NOT NULL DEFAULT 0,
+          forced INTEGER NOT NULL DEFAULT 1,
           added_at TEXT NOT NULL,
           FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS undo_actions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          action_type TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          label TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          undone_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS app_meta(
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_completions_task ON completions(task_id, completed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_undo_open ON undo_actions(undone_at, id DESC);
         """)
 
         if conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
@@ -127,11 +141,30 @@ def init_db():
                     (title,desc,category,color,icon,rtype,freq,due.isoformat(),due.isoformat(),iso_now()),
                 )
 
+        # v0.2: Hoy pasa a ser una cola manual. Limpiamos una sola vez
+        # las filas que las versiones anteriores añadían automáticamente.
+        migrated = conn.execute(
+            "SELECT value FROM app_meta WHERE key='manual_today_v1'"
+        ).fetchone()
+        if not migrated:
+            conn.execute("DELETE FROM today_queue WHERE forced=0")
+            conn.execute(
+                "INSERT INTO app_meta(key,value) VALUES('manual_today_v1',?)",
+                (iso_now(),),
+            )
+
 
 def task_row(conn, task_id):
     row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Tarea no encontrada")
+    return row
+
+
+def person_row(conn, person_id):
+    row = conn.execute("SELECT * FROM people WHERE id=?", (person_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Persona no encontrada")
     return row
 
 
@@ -180,20 +213,54 @@ def due_date(conn, task):
 
 
 def sync_today(conn):
-    current = {r["task_id"]: r for r in conn.execute("SELECT * FROM today_queue").fetchall()}
-    max_pos = conn.execute("SELECT COALESCE(MAX(position),0) FROM today_queue").fetchone()[0]
-    for task in conn.execute("SELECT * FROM tasks WHERE active=1 ORDER BY id").fetchall():
-        due = due_date(conn, task)
-        q = current.get(task["id"])
-        should_be_here = due is not None and due <= today_local()
-        if should_be_here and not q:
-            max_pos += 1
-            conn.execute(
-                "INSERT INTO today_queue(task_id,position,forced,added_at) VALUES(?,?,0,?)",
-                (task["id"], max_pos, iso_now()),
-            )
-        elif not should_be_here and q and not q["forced"]:
-            conn.execute("DELETE FROM today_queue WHERE task_id=?", (task["id"],))
+    # Hoy es deliberadamente manual: no añadimos tareas por fecha.
+    # Solo limpiamos referencias a tareas archivadas.
+    conn.execute(
+        "DELETE FROM today_queue WHERE task_id IN (SELECT id FROM tasks WHERE active=0)"
+    )
+
+
+def queue_snapshot(row):
+    return dict(row) if row else None
+
+
+def restore_queue_row(conn, snapshot):
+    if not snapshot:
+        return
+    conn.execute(
+        """INSERT INTO today_queue(task_id,position,forced,added_at)
+           VALUES(?,?,?,?)
+           ON CONFLICT(task_id) DO UPDATE SET
+             position=excluded.position,
+             forced=excluded.forced,
+             added_at=excluded.added_at""",
+        (
+            snapshot["task_id"],
+            snapshot["position"],
+            snapshot["forced"],
+            snapshot["added_at"],
+        ),
+    )
+
+
+def record_undo(conn, action_type, payload, label):
+    cur = conn.execute(
+        """INSERT INTO undo_actions(action_type,payload,label,created_at)
+           VALUES(?,?,?,?)""",
+        (action_type, json.dumps(payload, ensure_ascii=False), label, iso_now()),
+    )
+    return cur.lastrowid
+
+
+def latest_undo(conn):
+    cutoff = (now_local() - timedelta(hours=24)).isoformat(timespec="seconds")
+    row = conn.execute(
+        """SELECT id,label,created_at FROM undo_actions
+           WHERE undone_at IS NULL AND created_at>=?
+           ORDER BY id DESC LIMIT 1""",
+        (cutoff,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def task_json(conn, task):
@@ -203,7 +270,10 @@ def task_json(conn, task):
     d["next_due"] = due.isoformat() if due else None
     last = last_completion(conn, task["id"])
     if last:
-        p = conn.execute("SELECT id,name,color,icon FROM people WHERE id=?", (last["person_id"],)).fetchone()
+        p = conn.execute(
+            "SELECT id,name,color,icon,active FROM people WHERE id=?",
+            (last["person_id"],),
+        ).fetchone()
         d["last_completion"] = {"completed_at": last["completed_at"], "person": dict(p)}
     else:
         d["last_completion"] = None
@@ -250,39 +320,83 @@ def root():
     return FileResponse(BASE_DIR / "static" / "index.html")
 
 
+@app.get("/api/health")
+def health():
+    return {"ok": True, "version": "0.2.0"}
+
+
 @app.get("/api/state")
 def state():
     with db() as conn:
         sync_today(conn)
-        people = [dict(r) for r in conn.execute("SELECT * FROM people WHERE active=1 ORDER BY id").fetchall()]
-        tasks = [task_json(conn, r) for r in conn.execute("SELECT * FROM tasks ORDER BY active DESC,category,title").fetchall()]
-        today_ids = [r["task_id"] for r in conn.execute("SELECT * FROM today_queue ORDER BY position,task_id").fetchall()]
+        people_all = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM people ORDER BY active DESC,name COLLATE NOCASE,id"
+            ).fetchall()
+        ]
+        people = [p for p in people_all if p["active"]]
+        tasks = [
+            task_json(conn, r)
+            for r in conn.execute(
+                "SELECT * FROM tasks ORDER BY active DESC,category,title"
+            ).fetchall()
+        ]
+        today_ids = [
+            r["task_id"]
+            for r in conn.execute(
+                "SELECT * FROM today_queue ORDER BY position,task_id"
+            ).fetchall()
+        ]
         by_id = {t["id"]: t for t in tasks}
         today = [by_id[i] for i in today_ids if i in by_id and by_id[i]["active"]]
         today_set = set(today_ids)
         upcoming = sorted(
-            [t for t in tasks if t["active"] and t["next_due"] and t["id"] not in today_set],
-            key=lambda t: t["next_due"],
+            [
+                t
+                for t in tasks
+                if t["active"] and t["next_due"] and t["id"] not in today_set
+            ],
+            key=lambda t: (t["next_due"], t["title"].lower()),
         )
         history_rows = conn.execute(
-            """SELECT c.id,c.completed_at,t.id task_id,t.title,t.icon,p.id person_id,p.name,p.color,p.icon person_icon
-               FROM completions c JOIN tasks t ON t.id=c.task_id JOIN people p ON p.id=c.person_id
+            """SELECT c.id,c.completed_at,t.id task_id,t.title,t.icon,
+                      p.id person_id,p.name,p.color,p.icon person_icon
+               FROM completions c
+               JOIN tasks t ON t.id=c.task_id
+               JOIN people p ON p.id=c.person_id
                ORDER BY c.completed_at DESC,c.id DESC LIMIT 200"""
         ).fetchall()
         history = [dict(r) for r in history_rows]
         cutoff = (now_local() - timedelta(days=30)).isoformat()
-        stats = [dict(r) for r in conn.execute(
-            """SELECT p.id,p.name,p.color,p.icon,COUNT(c.id) count
-               FROM people p LEFT JOIN completions c ON c.person_id=p.id AND c.completed_at>=?
-               WHERE p.active=1 GROUP BY p.id ORDER BY p.id""",
-            (cutoff,),
-        ).fetchall()]
-        return {"people":people,"today":today,"upcoming":upcoming,"tasks":tasks,"history":history,"stats":stats}
+        stats = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT p.id,p.name,p.color,p.icon,p.active,COUNT(c.id) count
+                   FROM people p
+                   LEFT JOIN completions c
+                     ON c.person_id=p.id AND c.completed_at>=?
+                   GROUP BY p.id
+                   HAVING p.active=1 OR COUNT(c.id)>0
+                   ORDER BY p.active DESC,p.name COLLATE NOCASE""",
+                (cutoff,),
+            ).fetchall()
+        ]
+        return {
+            "people": people,
+            "people_all": people_all,
+            "today": today,
+            "upcoming": upcoming,
+            "tasks": tasks,
+            "history": history,
+            "stats": stats,
+            "last_undo": latest_undo(conn),
+        }
 
 
 @app.post("/api/tasks")
 def create_task(payload: TaskIn):
-    if payload.recurrence_type not in {"none","cycle","fixed"}:
+    if payload.recurrence_type not in {"none", "cycle", "fixed"}:
         raise HTTPException(400, "Recurrencia no válida")
     due = payload.initial_due_date or today_local().isoformat()
     anchor = payload.anchor_date or due
@@ -291,35 +405,70 @@ def create_task(payload: TaskIn):
             """INSERT INTO tasks(title,description,category,color,icon,recurrence_type,
                frequency_days,initial_due_date,anchor_date,active,created_at)
                VALUES(?,?,?,?,?,?,?,?,?,1,?)""",
-            (payload.title.strip(),payload.description.strip(),payload.category.strip() or "General",
-             payload.color,payload.icon,payload.recurrence_type,payload.frequency_days,due,anchor,iso_now()),
+            (
+                payload.title.strip(),
+                payload.description.strip(),
+                payload.category.strip() or "General",
+                payload.color,
+                payload.icon,
+                payload.recurrence_type,
+                payload.frequency_days,
+                due,
+                anchor,
+                iso_now(),
+            ),
         )
-        return {"id":cur.lastrowid}
+        return {"id": cur.lastrowid}
 
 
 @app.put("/api/tasks/{task_id}")
 def update_task(task_id: int, payload: TaskIn):
+    if payload.recurrence_type not in {"none", "cycle", "fixed"}:
+        raise HTTPException(400, "Recurrencia no válida")
     with db() as conn:
         task_row(conn, task_id)
         due = payload.initial_due_date or today_local().isoformat()
         anchor = payload.anchor_date or due
         conn.execute(
-            """UPDATE tasks SET title=?,description=?,category=?,color=?,icon=?,recurrence_type=?,
-               frequency_days=?,initial_due_date=?,anchor_date=? WHERE id=?""",
-            (payload.title.strip(),payload.description.strip(),payload.category.strip() or "General",
-             payload.color,payload.icon,payload.recurrence_type,payload.frequency_days,due,anchor,task_id),
+            """UPDATE tasks SET title=?,description=?,category=?,color=?,icon=?,
+               recurrence_type=?,frequency_days=?,initial_due_date=?,anchor_date=?
+               WHERE id=?""",
+            (
+                payload.title.strip(),
+                payload.description.strip(),
+                payload.category.strip() or "General",
+                payload.color,
+                payload.icon,
+                payload.recurrence_type,
+                payload.frequency_days,
+                due,
+                anchor,
+                task_id,
+            ),
         )
-        sync_today(conn)
-        return {"ok":True}
+        return {"ok": True}
 
 
 @app.delete("/api/tasks/{task_id}")
 def archive_task(task_id: int):
     with db() as conn:
-        task_row(conn, task_id)
+        task = task_row(conn, task_id)
+        queue = conn.execute(
+            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
+        ).fetchone()
         conn.execute("UPDATE tasks SET active=0 WHERE id=?", (task_id,))
         conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
-        return {"ok":True}
+        undo_id = record_undo(
+            conn,
+            "archive_task",
+            {
+                "task_id": task_id,
+                "previous_active": task["active"],
+                "queue": queue_snapshot(queue),
+            },
+            f'Archivada "{task["title"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id}
 
 
 @app.delete("/api/tasks/{task_id}/hard")
@@ -327,7 +476,7 @@ def delete_task_permanently(task_id: int):
     with db() as conn:
         task_row(conn, task_id)
         conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
-        return {"ok":True}
+        return {"ok": True}
 
 
 @app.post("/api/today/{task_id}")
@@ -336,21 +485,59 @@ def add_today(task_id: int):
         task = task_row(conn, task_id)
         if not task["active"]:
             raise HTTPException(400, "La tarea está archivada")
-        pos = conn.execute("SELECT COALESCE(MAX(position),0)+1 FROM today_queue").fetchone()[0]
+        existing = conn.execute(
+            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if existing:
+            # Idempotente: dos eventos drop nunca añaden dos tareas.
+            return {"ok": True, "undo_id": None, "already_today": True}
+
+        pos = conn.execute(
+            "SELECT COALESCE(MAX(position),0)+1 FROM today_queue"
+        ).fetchone()[0]
         conn.execute(
-            """INSERT INTO today_queue(task_id,position,forced,added_at) VALUES(?,?,1,?)
-               ON CONFLICT(task_id) DO UPDATE SET forced=1""",
-            (task_id,pos,iso_now()),
+            "INSERT INTO today_queue(task_id,position,forced,added_at) VALUES(?,?,1,?)",
+            (task_id, pos, iso_now()),
         )
-        return {"ok":True}
+        undo_id = record_undo(
+            conn,
+            "add_today",
+            {"task_id": task_id},
+            f'Añadida a Hoy: "{task["title"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id, "already_today": False}
 
 
 @app.post("/api/today/reorder")
 def reorder_today(payload: ReorderIn):
     with db() as conn:
+        old_order = [
+            r["task_id"]
+            for r in conn.execute(
+                "SELECT task_id FROM today_queue ORDER BY position,task_id"
+            ).fetchall()
+        ]
+        if (
+            len(payload.task_ids) != len(old_order)
+            or len(set(payload.task_ids)) != len(payload.task_ids)
+            or set(payload.task_ids) != set(old_order)
+        ):
+            raise HTTPException(400, "La lista de Hoy cambió; recarga e inténtalo de nuevo")
+        if payload.task_ids == old_order:
+            return {"ok": True, "undo_id": None}
+
         for pos, task_id in enumerate(payload.task_ids, start=1):
-            conn.execute("UPDATE today_queue SET position=? WHERE task_id=?", (pos,task_id))
-        return {"ok":True}
+            conn.execute(
+                "UPDATE today_queue SET position=? WHERE task_id=?",
+                (pos, task_id),
+            )
+        undo_id = record_undo(
+            conn,
+            "reorder_today",
+            {"old_order": old_order},
+            "Reordenada la cola de Hoy",
+        )
+        return {"ok": True, "undo_id": undo_id}
 
 
 @app.post("/api/tasks/{task_id}/postpone")
@@ -359,44 +546,248 @@ def postpone(task_id: int, payload: PostponeIn):
         date.fromisoformat(payload.due_date)
     except ValueError:
         raise HTTPException(400, "Fecha no válida")
+
     with db() as conn:
-        task_row(conn, task_id)
-        conn.execute("UPDATE schedule_overrides SET consumed_at=? WHERE task_id=? AND consumed_at IS NULL", (iso_now(),task_id))
-        conn.execute(
+        task = task_row(conn, task_id)
+        queue = conn.execute(
+            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
+        ).fetchone()
+        previous_override = conn.execute(
+            """SELECT * FROM schedule_overrides
+               WHERE task_id=? AND consumed_at IS NULL
+               ORDER BY id DESC LIMIT 1""",
+            (task_id,),
+        ).fetchone()
+
+        if previous_override:
+            conn.execute(
+                "UPDATE schedule_overrides SET consumed_at=? WHERE id=?",
+                (iso_now(), previous_override["id"]),
+            )
+        cur = conn.execute(
             "INSERT INTO schedule_overrides(task_id,due_date,created_at) VALUES(?,?,?)",
-            (task_id,payload.due_date,iso_now()),
+            (task_id, payload.due_date, iso_now()),
         )
         conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
-        return {"ok":True}
+        undo_id = record_undo(
+            conn,
+            "postpone",
+            {
+                "task_id": task_id,
+                "new_override_id": cur.lastrowid,
+                "previous_override_id": previous_override["id"]
+                if previous_override
+                else None,
+                "queue": queue_snapshot(queue),
+            },
+            f'Pospuesta "{task["title"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id}
 
 
 @app.post("/api/tasks/{task_id}/complete")
 def complete(task_id: int, payload: CompleteIn):
     with db() as conn:
         task = task_row(conn, task_id)
-        person = conn.execute("SELECT * FROM people WHERE id=? AND active=1", (payload.person_id,)).fetchone()
+        person = conn.execute(
+            "SELECT * FROM people WHERE id=? AND active=1", (payload.person_id,)
+        ).fetchone()
         if not person:
             raise HTTPException(400, "Persona no válida")
-        conn.execute(
+
+        queue = conn.execute(
+            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
+        ).fetchone()
+        active_override = conn.execute(
+            """SELECT * FROM schedule_overrides
+               WHERE task_id=? AND consumed_at IS NULL
+               ORDER BY id DESC LIMIT 1""",
+            (task_id,),
+        ).fetchone()
+
+        cur = conn.execute(
             "INSERT INTO completions(task_id,person_id,completed_at) VALUES(?,?,?)",
-            (task_id,payload.person_id,iso_now()),
+            (task_id, payload.person_id, iso_now()),
         )
-        conn.execute("UPDATE schedule_overrides SET consumed_at=? WHERE task_id=? AND consumed_at IS NULL", (iso_now(),task_id))
+        if active_override:
+            conn.execute(
+                "UPDATE schedule_overrides SET consumed_at=? WHERE id=?",
+                (iso_now(), active_override["id"]),
+            )
         conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
         if task["recurrence_type"] == "none":
             conn.execute("UPDATE tasks SET active=0 WHERE id=?", (task_id,))
-        sync_today(conn)
-        return {"ok":True}
+
+        undo_id = record_undo(
+            conn,
+            "complete",
+            {
+                "task_id": task_id,
+                "completion_id": cur.lastrowid,
+                "previous_active": task["active"],
+                "active_override_id": active_override["id"]
+                if active_override
+                else None,
+                "queue": queue_snapshot(queue),
+            },
+            f'Completada "{task["title"]}" por {person["name"]}',
+        )
+        return {"ok": True, "undo_id": undo_id}
 
 
 @app.post("/api/people")
 def create_person(payload: PersonIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre no puede estar vacío")
     with db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM people WHERE name=?", (name,)
+        ).fetchone()
+        if existing:
+            if existing["active"]:
+                raise HTTPException(409, "Ya existe una persona con ese nombre")
+            conn.execute(
+                "UPDATE people SET active=1,color=?,icon=? WHERE id=?",
+                (payload.color, payload.icon, existing["id"]),
+            )
+            return {"id": existing["id"], "reactivated": True}
+
+        cur = conn.execute(
+            "INSERT INTO people(name,color,icon) VALUES(?,?,?)",
+            (name, payload.color, payload.icon),
+        )
+        return {"id": cur.lastrowid, "reactivated": False}
+
+
+@app.put("/api/people/{person_id}")
+def update_person(person_id: int, payload: PersonIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre no puede estar vacío")
+    with db() as conn:
+        person_row(conn, person_id)
         try:
-            cur = conn.execute(
-                "INSERT INTO people(name,color,icon) VALUES(?,?,?)",
-                (payload.name.strip(),payload.color,payload.icon),
+            conn.execute(
+                "UPDATE people SET name=?,color=?,icon=? WHERE id=?",
+                (name, payload.color, payload.icon, person_id),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(409, "Ya existe una persona con ese nombre")
-        return {"id":cur.lastrowid}
+        return {"ok": True}
+
+
+@app.delete("/api/people/{person_id}")
+def delete_person(person_id: int):
+    with db() as conn:
+        person = person_row(conn, person_id)
+        if not person["active"]:
+            return {"ok": True, "undo_id": None}
+
+        active_count = conn.execute(
+            "SELECT COUNT(*) FROM people WHERE active=1"
+        ).fetchone()[0]
+        if active_count <= 1:
+            raise HTTPException(400, "Debe quedar al menos una persona activa")
+
+        conn.execute("UPDATE people SET active=0 WHERE id=?", (person_id,))
+        undo_id = record_undo(
+            conn,
+            "person_active",
+            {"person_id": person_id, "previous_active": 1},
+            f'Eliminada la persona "{person["name"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id}
+
+
+@app.post("/api/people/{person_id}/restore")
+def restore_person(person_id: int):
+    with db() as conn:
+        person = person_row(conn, person_id)
+        if person["active"]:
+            return {"ok": True, "undo_id": None}
+        conn.execute("UPDATE people SET active=1 WHERE id=?", (person_id,))
+        undo_id = record_undo(
+            conn,
+            "person_active",
+            {"person_id": person_id, "previous_active": 0},
+            f'Reactivada la persona "{person["name"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id}
+
+
+@app.post("/api/undo/{undo_id}")
+def undo(undo_id: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM undo_actions WHERE id=? AND undone_at IS NULL",
+            (undo_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Esta acción ya no se puede deshacer")
+
+        payload = json.loads(row["payload"])
+        action = row["action_type"]
+
+        if action == "add_today":
+            conn.execute(
+                "DELETE FROM today_queue WHERE task_id=?",
+                (payload["task_id"],),
+            )
+
+        elif action == "reorder_today":
+            for pos, task_id in enumerate(payload["old_order"], start=1):
+                conn.execute(
+                    "UPDATE today_queue SET position=? WHERE task_id=?",
+                    (pos, task_id),
+                )
+
+        elif action == "postpone":
+            conn.execute(
+                "DELETE FROM schedule_overrides WHERE id=?",
+                (payload["new_override_id"],),
+            )
+            if payload.get("previous_override_id"):
+                conn.execute(
+                    "UPDATE schedule_overrides SET consumed_at=NULL WHERE id=?",
+                    (payload["previous_override_id"],),
+                )
+            restore_queue_row(conn, payload.get("queue"))
+
+        elif action == "complete":
+            conn.execute(
+                "DELETE FROM completions WHERE id=?",
+                (payload["completion_id"],),
+            )
+            conn.execute(
+                "UPDATE tasks SET active=? WHERE id=?",
+                (payload["previous_active"], payload["task_id"]),
+            )
+            if payload.get("active_override_id"):
+                conn.execute(
+                    "UPDATE schedule_overrides SET consumed_at=NULL WHERE id=?",
+                    (payload["active_override_id"],),
+                )
+            restore_queue_row(conn, payload.get("queue"))
+
+        elif action == "archive_task":
+            conn.execute(
+                "UPDATE tasks SET active=? WHERE id=?",
+                (payload["previous_active"], payload["task_id"]),
+            )
+            restore_queue_row(conn, payload.get("queue"))
+
+        elif action == "person_active":
+            conn.execute(
+                "UPDATE people SET active=? WHERE id=?",
+                (payload["previous_active"], payload["person_id"]),
+            )
+
+        else:
+            raise HTTPException(400, "Tipo de deshacer no soportado")
+
+        conn.execute(
+            "UPDATE undo_actions SET undone_at=? WHERE id=?",
+            (iso_now(), undo_id),
+        )
+        return {"ok": True, "undone": row["label"]}
