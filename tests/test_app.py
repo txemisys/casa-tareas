@@ -536,3 +536,155 @@ def test_requested_household_people_and_areas_are_seeded_idempotently(client):
     area_names = [a["name"] for a in again["areas_all"]]
     for name in expected_areas:
         assert area_names.count(name) == 1
+
+
+def test_event_create_update_and_delete(client):
+    import app as app_module
+
+    state = get_state(client)
+    area_id = state["areas"][0]["id"]
+    event_at = (app_module.now_local() + timedelta(days=2)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+
+    created = client.post(
+        "/api/events",
+        json={
+            "title": "Reunión de propietarios",
+            "description": "Llevar documentación.",
+            "area_id": area_id,
+            "event_at": event_at,
+            "reminders": [1440, 60, 60],
+        },
+    )
+    assert created.status_code == 200
+    event_id = created.json()["id"]
+
+    state = get_state(client)
+    event = next(e for e in state["events"] if e["id"] == event_id)
+    assert event["title"] == "Reunión de propietarios"
+    assert event["area"]["id"] == area_id
+    assert event["reminders"] == [1440, 60]
+    assert any(e["id"] == event_id for e in state["event_upcoming"])
+
+    updated_at = (app_module.now_local() + timedelta(days=3)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+    updated = client.put(
+        f"/api/events/{event_id}",
+        json={
+            "title": "Reunión comunidad",
+            "description": "Nuevo orden del día.",
+            "area_id": area_id,
+            "event_at": updated_at,
+            "reminders": [10080, 120],
+        },
+    )
+    assert updated.status_code == 200
+
+    event = next(e for e in get_state(client)["events"] if e["id"] == event_id)
+    assert event["title"] == "Reunión comunidad"
+    assert event["reminders"] == [10080, 120]
+
+    deleted = client.delete(f"/api/events/{event_id}")
+    assert deleted.status_code == 200
+    assert all(e["id"] != event_id for e in get_state(client)["events"])
+
+
+def test_event_due_reminder_can_be_acknowledged(client):
+    import app as app_module
+
+    event_at = (app_module.now_local() + timedelta(minutes=30)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+
+    created = client.post(
+        "/api/events",
+        json={
+            "title": "Llamada administración",
+            "description": "",
+            "area_id": None,
+            "event_at": event_at,
+            "reminders": [60, 0],
+        },
+    )
+    assert created.status_code == 200
+    event_id = created.json()["id"]
+
+    state = get_state(client)
+    alert = next(
+        a
+        for a in state["alerts_due"]
+        if a["event_id"] == event_id and a["reminder_minutes"] == 60
+    )
+    assert alert["title"] == "Llamada administración"
+    assert not any(
+        a["event_id"] == event_id and a["reminder_minutes"] == 0
+        for a in state["alerts_due"]
+    )
+
+    ack = client.post(f"/api/events/{event_id}/reminders/60/ack")
+    assert ack.status_code == 200
+    after = get_state(client)
+    assert not any(
+        a["event_id"] == event_id and a["reminder_minutes"] == 60
+        for a in after["alerts_due"]
+    )
+
+
+def test_event_today_and_upcoming_classification(client):
+    import app as app_module
+
+    now = app_module.now_local()
+    today_event = (now + timedelta(minutes=30)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+    tomorrow_event = (now + timedelta(days=1, minutes=30)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+
+    today_created = client.post(
+        "/api/events",
+        json={
+            "title": "Evento de hoy",
+            "description": "",
+            "area_id": None,
+            "event_at": today_event,
+            "reminders": [],
+        },
+    )
+    tomorrow_created = client.post(
+        "/api/events",
+        json={
+            "title": "Evento de mañana",
+            "description": "",
+            "area_id": None,
+            "event_at": tomorrow_event,
+            "reminders": [],
+        },
+    )
+    assert today_created.status_code == 200
+    assert tomorrow_created.status_code == 200
+
+    state = get_state(client)
+    assert any(e["id"] == today_created.json()["id"] for e in state["event_today"])
+    assert any(e["id"] == tomorrow_created.json()["id"] for e in state["event_upcoming"])
+
+
+def test_event_rejects_invalid_date_area_and_reminder(client):
+    base = {
+        "title": "Evento inválido",
+        "description": "",
+        "area_id": None,
+        "event_at": "no-es-fecha",
+        "reminders": [60],
+    }
+    assert client.post("/api/events", json=base).status_code == 400
+
+    base["event_at"] = "2030-01-01T12:00"
+    base["area_id"] = 999999
+    assert client.post("/api/events", json=base).status_code == 400
+
+    base["area_id"] = None
+    base["reminders"] = [-1]
+    assert client.post("/api/events", json=base).status_code == 400
