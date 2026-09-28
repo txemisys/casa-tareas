@@ -44,6 +44,20 @@ En **Áreas** se muestran también las tareas asociadas a cada ámbito.
 - La API aplica la misma restricción, por lo que no puede saltarse desde fuera de la interfaz.
 - Mover una tarea entre áreas se puede **Deshacer**.
 
+## Agenda y avisos
+
+La aplicación incluye una **Agenda** separada de las tareas para reuniones, citas, vencimientos y otras fechas concretas.
+
+- Cada evento puede asociarse a un Área.
+- Puede tener fecha, hora, notas y varios recordatorios.
+- Los eventos de hoy aparecen en la columna **Hoy** del tablero.
+- Los eventos futuros aparecen en **Próximamente**.
+- Los recordatorios vencidos aparecen como avisos dentro de Casa Tareas hasta marcarlos como **Visto**.
+- Se pueden activar notificaciones del navegador cuando la app está abierta y el navegador dispone de un contexto seguro (HTTPS o localhost).
+- Las Áreas con eventos asociados tampoco se pueden eliminar definitivamente hasta mover o reasignar esos eventos.
+
+Las notificaciones del navegador de esta versión no garantizan avisos con la aplicación completamente cerrada. Para eso se necesita un canal externo o push web con servicio de notificaciones.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
