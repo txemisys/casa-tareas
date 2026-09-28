@@ -563,6 +563,374 @@ def task_need(conn, task):
     }
 
 
+def log_activity(
+    conn,
+    kind,
+    summary,
+    detail="",
+    entity_type=None,
+    entity_id=None,
+):
+    conn.execute(
+        """INSERT INTO activity_log(
+           kind,summary,detail,entity_type,entity_id,created_at
+           ) VALUES(?,?,?,?,?,?)""",
+        (
+            kind,
+            summary[:240],
+            (detail or "")[:1000],
+            entity_type,
+            entity_id,
+            iso_now(),
+        ),
+    )
+
+
+def attachment_json(row):
+    d = dict(row)
+    d.pop("stored_name", None)
+    return d
+
+
+def attachments_for(conn, entity_type, entity_id):
+    return [
+        attachment_json(r)
+        for r in conn.execute(
+            """SELECT * FROM attachments
+               WHERE entity_type=? AND entity_id=?
+               ORDER BY created_at DESC,id DESC""",
+            (entity_type, entity_id),
+        ).fetchall()
+    ]
+
+
+def delete_attachment_file(row):
+    try:
+        path = ATTACHMENTS_DIR / row["stored_name"]
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def delete_attachments_for(conn, entity_type, entity_id):
+    rows = conn.execute(
+        "SELECT * FROM attachments WHERE entity_type=? AND entity_id=?",
+        (entity_type, entity_id),
+    ).fetchall()
+    for row in rows:
+        delete_attachment_file(row)
+    conn.execute(
+        "DELETE FROM attachments WHERE entity_type=? AND entity_id=?",
+        (entity_type, entity_id),
+    )
+
+
+def inventory_item_json(conn, item, include_required_by=False):
+    d = dict(item)
+    d["active"] = bool(d["active"])
+    d["shopping_requested"] = bool(d["shopping_requested"])
+    d["needs_purchase"] = bool(
+        d["shopping_requested"] or d["stock_status"] in {"low", "out"}
+    )
+    d["available"] = d["stock_status"] != "out"
+    area = None
+    if d.get("area_id"):
+        row = conn.execute(
+            "SELECT id,name,color,icon,active FROM areas WHERE id=?",
+            (d["area_id"],),
+        ).fetchone()
+        if row:
+            area = dict(row)
+            area["active"] = bool(area["active"])
+    d["area"] = area
+    if include_required_by:
+        d["required_by"] = [
+            {"id": r["id"], "title": r["title"], "active": bool(r["active"])}
+            for r in conn.execute(
+                """SELECT t.id,t.title,t.active
+                   FROM task_supplies s
+                   JOIN tasks t ON t.id=s.task_id
+                   WHERE s.item_id=? AND t.active=1
+                   ORDER BY t.title COLLATE NOCASE,t.id""",
+                (d["id"],),
+            ).fetchall()
+        ]
+    return d
+
+
+def task_supplies(conn, task_id):
+    return [
+        inventory_item_json(conn, r)
+        for r in conn.execute(
+            """SELECT i.*
+               FROM task_supplies s
+               JOIN inventory_items i ON i.id=s.item_id
+               WHERE s.task_id=? AND i.active=1
+               ORDER BY i.category COLLATE NOCASE,i.name COLLATE NOCASE,i.id""",
+            (task_id,),
+        ).fetchall()
+    ]
+
+
+def validate_supply_ids(conn, supply_ids):
+    ids = []
+    for raw in supply_ids or []:
+        item_id = int(raw)
+        if item_id in ids:
+            continue
+        row = conn.execute(
+            "SELECT id FROM inventory_items WHERE id=? AND active=1",
+            (item_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, f"Producto de inventario no válido: {item_id}")
+        ids.append(item_id)
+    return ids
+
+
+def set_task_supplies(conn, task_id, supply_ids):
+    ids = validate_supply_ids(conn, supply_ids)
+    conn.execute("DELETE FROM task_supplies WHERE task_id=?", (task_id,))
+    conn.executemany(
+        "INSERT INTO task_supplies(task_id,item_id) VALUES(?,?)",
+        [(task_id, item_id) for item_id in ids],
+    )
+
+
+def normalize_calendar_url(value):
+    url = (value or "").strip()
+    if url.startswith("webcal://"):
+        url = "https://" + url[len("webcal://"):]
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise HTTPException(400, "El calendario debe usar una URL HTTPS")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise HTTPException(400, "No se puede resolver el servidor del calendario") from exc
+    for info in infos:
+        address = info[4][0]
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise HTTPException(
+                400,
+                "Por seguridad, el calendario debe estar alojado en una dirección pública",
+            )
+    return url
+
+
+def calendar_subscription_json(conn, row):
+    d = dict(row)
+    url = d.pop("url", "")
+    parsed = urllib.parse.urlparse(url)
+    d["url_display"] = parsed.hostname or "calendario externo"
+    d["active"] = bool(d["active"])
+    area = None
+    if d.get("area_id"):
+        a = conn.execute(
+            "SELECT id,name,color,icon,active FROM areas WHERE id=?",
+            (d["area_id"],),
+        ).fetchone()
+        if a:
+            area = dict(a)
+            area["active"] = bool(area["active"])
+    d["area"] = area
+    return d
+
+
+def ical_datetime(value):
+    all_day = isinstance(value, date) and not isinstance(value, datetime)
+    if all_day:
+        dt = datetime.combine(value, datetime.min.time(), tzinfo=TZ)
+    elif isinstance(value, datetime):
+        dt = value.replace(tzinfo=TZ) if value.tzinfo is None else value.astimezone(TZ)
+    else:
+        raise ValueError("Fecha iCal no válida")
+    return dt, all_day
+
+
+def external_event_json(conn, row):
+    d = dict(row)
+    d["external"] = True
+    d["source"] = "ical"
+    d["event_at"] = d["start_at"]
+    d["all_day"] = bool(d["all_day"])
+    d["reminders"] = []
+    sub = conn.execute(
+        "SELECT * FROM calendar_subscriptions WHERE id=?",
+        (d["subscription_id"],),
+    ).fetchone()
+    d["calendar_name"] = sub["name"] if sub else "Calendario externo"
+    area = None
+    area_id = sub["area_id"] if sub else None
+    if area_id:
+        a = conn.execute(
+            "SELECT id,name,color,icon,active FROM areas WHERE id=?",
+            (area_id,),
+        ).fetchone()
+        if a:
+            area = dict(a)
+            area["active"] = bool(area["active"])
+    d["area"] = area
+    return d
+
+
+def fetch_calendar_bytes(url):
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Casa-Tareas/1.0 iCal"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            content_type = (response.headers.get("Content-Type") or "").lower()
+            data = response.read(5 * 1024 * 1024 + 1)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"No se pudo descargar el calendario: {exc}") from exc
+    if len(data) > 5 * 1024 * 1024:
+        raise RuntimeError("El calendario supera el límite de 5 MB")
+    if not data:
+        raise RuntimeError("El calendario está vacío")
+    if "text/calendar" not in content_type and b"BEGIN:VCALENDAR" not in data[:4096]:
+        raise RuntimeError("La URL no parece devolver un calendario iCal")
+    return data
+
+
+def parse_calendar_occurrences(data):
+    try:
+        calendar = Calendar.from_ical(data)
+    except Exception as exc:
+        raise RuntimeError("No se pudo interpretar el calendario iCal") from exc
+
+    start_window = datetime.combine(
+        today_local() - timedelta(days=14),
+        datetime.min.time(),
+        tzinfo=TZ,
+    )
+    end_window = start_window + timedelta(days=380)
+    try:
+        components = recurring_ical_events.of(calendar).between(
+            start_window,
+            end_window,
+        )
+    except Exception as exc:
+        raise RuntimeError("No se pudieron expandir los eventos recurrentes") from exc
+
+    result = []
+    for component in components:
+        try:
+            raw_start = component.decoded("DTSTART")
+            start_at, all_day = ical_datetime(raw_start)
+        except Exception:
+            continue
+        raw_end = component.get("DTEND")
+        end_at = None
+        if raw_end is not None:
+            try:
+                end_at, _ = ical_datetime(component.decoded("DTEND"))
+            except Exception:
+                end_at = None
+        uid = str(component.get("UID") or f"sin-uid-{start_at.isoformat()}")
+        occurrence_key = start_at.isoformat(timespec="minutes")
+        result.append(
+            {
+                "uid": uid[:500],
+                "occurrence_key": occurrence_key,
+                "title": str(component.get("SUMMARY") or "Evento")[:300],
+                "description": str(component.get("DESCRIPTION") or "")[:4000],
+                "location": str(component.get("LOCATION") or "")[:500],
+                "start_at": start_at.isoformat(timespec="minutes"),
+                "end_at": end_at.isoformat(timespec="minutes") if end_at else None,
+                "all_day": 1 if all_day else 0,
+            }
+        )
+    result.sort(key=lambda x: (x["start_at"], x["title"].casefold()))
+    return result
+
+
+def sync_calendar_subscription(subscription_id):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM calendar_subscriptions WHERE id=? AND active=1",
+            (subscription_id,),
+        ).fetchone()
+        if not row:
+            return 0
+        url = row["url"]
+
+    try:
+        url = normalize_calendar_url(url)
+        occurrences = parse_calendar_occurrences(fetch_calendar_bytes(url))
+    except (HTTPException, RuntimeError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        with db() as conn:
+            conn.execute(
+                "UPDATE calendar_subscriptions SET last_error=?,updated_at=? WHERE id=?",
+                (str(detail)[:1000], iso_now(), subscription_id),
+            )
+        raise RuntimeError(str(detail)) from exc
+
+    with db() as conn:
+        conn.execute(
+            "DELETE FROM calendar_external_events WHERE subscription_id=?",
+            (subscription_id,),
+        )
+        conn.executemany(
+            """INSERT INTO calendar_external_events(
+               subscription_id,uid,occurrence_key,title,description,location,
+               start_at,end_at,all_day,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    subscription_id,
+                    event["uid"],
+                    event["occurrence_key"],
+                    event["title"],
+                    event["description"],
+                    event["location"],
+                    event["start_at"],
+                    event["end_at"],
+                    event["all_day"],
+                    iso_now(),
+                )
+                for event in occurrences
+            ],
+        )
+        conn.execute(
+            """UPDATE calendar_subscriptions
+               SET last_sync_at=?,last_error=NULL,updated_at=? WHERE id=?""",
+            (iso_now(), iso_now(), subscription_id),
+        )
+    return len(occurrences)
+
+
+def sync_all_calendars():
+    with db() as conn:
+        ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM calendar_subscriptions WHERE active=1 ORDER BY id"
+            ).fetchall()
+        ]
+    for subscription_id in ids:
+        try:
+            sync_calendar_subscription(subscription_id)
+        except Exception as exc:
+            print(f"iCal sync error for {subscription_id}: {exc}", flush=True)
+
+
+async def calendar_sync_loop():
+    while True:
+        try:
+            await asyncio.to_thread(sync_all_calendars)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"iCal worker error: {exc}", flush=True)
+        await asyncio.sleep(ICAL_SYNC_MINUTES * 60)
+
+
 def area_json(conn, area):
     d = dict(area)
     d["active"] = bool(d["active"])
