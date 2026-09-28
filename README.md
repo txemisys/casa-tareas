@@ -32,6 +32,18 @@ La aplicación diferencia entre **quién es responsable de que algo ocurra** y *
 
 Las bases existentes se migran de forma aditiva al arrancar; no es necesario borrar `data/chores.db`.
 
+### Mover y eliminar áreas
+
+En **Áreas** se muestran también las tareas asociadas a cada ámbito.
+
+- En escritorio se pueden arrastrar tareas de un área a otra.
+- En móvil o con teclado se puede usar el botón **Mover** de cada tarea.
+- También existe **Sin área** como destino temporal.
+- Las tareas archivadas siguen contando como asociadas y también se pueden mover.
+- **Eliminar definitivamente** solo se habilita cuando el área tiene 0 tareas asociadas.
+- La API aplica la misma restricción, por lo que no puede saltarse desde fuera de la interfaz.
+- Mover una tarea entre áreas se puede **Deshacer**.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
