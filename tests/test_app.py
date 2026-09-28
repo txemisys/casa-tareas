@@ -719,3 +719,183 @@ def test_area_with_linked_event_cannot_be_deleted(client):
     blocked = client.delete(f"/api/areas/{area_id}/hard")
     assert blocked.status_code == 409
     assert "1 evento(s)" in blocked.json()["detail"]
+
+
+def test_telegram_detect_connect_test_and_disconnect(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    sent = []
+
+    def fake_telegram(method, payload=None):
+        if method == "getUpdates":
+            return [
+                {
+                    "message": {
+                        "chat": {
+                            "id": -1001234567890,
+                            "title": 'Casa "Familia"',
+                            "type": "supergroup",
+                        }
+                    }
+                }
+            ]
+        if method == "getChat":
+            assert int(payload["chat_id"]) == -1001234567890
+            return {
+                "id": -1001234567890,
+                "title": 'Casa "Familia"',
+                "type": "supergroup",
+            }
+        if method == "sendMessage":
+            sent.append(dict(payload))
+            return {"message_id": 1}
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+
+    detected = client.post("/api/telegram/chats")
+    assert detected.status_code == 200
+    chats = detected.json()["chats"]
+    assert chats == [
+        {
+            "chat_id": -1001234567890,
+            "title": 'Casa "Familia"',
+            "type": "supergroup",
+        }
+    ]
+
+    connected = client.put(
+        "/api/telegram/chat",
+        json={"chat_id": -1001234567890, "title": ""},
+    )
+    assert connected.status_code == 200
+    assert connected.json()["chat_title"] == 'Casa "Familia"'
+
+    status = client.get("/api/telegram/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["token_configured"] is True
+    assert body["chat_id"] == -1001234567890
+    assert body["chat_title"] == 'Casa "Familia"'
+    assert "test-token" not in str(body)
+
+    test_message = client.post("/api/telegram/test")
+    assert test_message.status_code == 200
+    assert len(sent) == 1
+    assert sent[0]["chat_id"] == "-1001234567890"
+    assert "Casa Tareas" in sent[0]["text"]
+
+    disconnected = client.delete("/api/telegram/chat")
+    assert disconnected.status_code == 200
+    after = client.get("/api/telegram/status").json()
+    assert after["chat_id"] is None
+    assert after["chat_title"] == ""
+
+
+def test_telegram_reminder_is_sent_once_and_skips_stale_reminders(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    sent = []
+
+    def fake_telegram(method, payload=None):
+        if method == "sendMessage":
+            sent.append(dict(payload))
+            return {"message_id": len(sent)}
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", -1009876543210)
+        app_module.set_meta(conn, "telegram_chat_title", "Casa Tareas")
+
+    event_at = (app_module.now_local() + timedelta(minutes=30)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+    created = client.post(
+        "/api/events",
+        json={
+            "title": "Reunión del piso",
+            "description": "Llevar las actas.",
+            "area_id": None,
+            "event_at": event_at,
+            "reminders": [1440, 60],
+        },
+    )
+    assert created.status_code == 200
+    event_id = created.json()["id"]
+
+    assert app_module.process_telegram_reminders() == 1
+    assert len(sent) == 1
+    assert sent[0]["chat_id"] == "-1009876543210"
+    assert "Reunión del piso" in sent[0]["text"]
+    assert "1 hora antes" in sent[0]["text"]
+
+    # Una segunda comprobación no debe duplicar el mismo aviso.
+    assert app_module.process_telegram_reminders() == 0
+    assert len(sent) == 1
+
+    # Los recordatorios ya vencidos se marcan como procesados para evitar
+    # enviar después el de 1 día con retraso.
+    with app_module.db() as conn:
+        rows = conn.execute(
+            """SELECT reminder_minutes FROM notification_deliveries
+               WHERE event_id=? AND channel='telegram'
+               ORDER BY reminder_minutes DESC""",
+            (event_id,),
+        ).fetchall()
+    assert [r["reminder_minutes"] for r in rows] == [1440, 60]
+
+
+def test_editing_event_resets_telegram_delivery_state(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setattr(
+        app_module,
+        "telegram_api_request",
+        lambda method, payload=None: {"message_id": 1},
+    )
+
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", -100111222333)
+
+    event_at = (app_module.now_local() + timedelta(minutes=30)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+    created = client.post(
+        "/api/events",
+        json={
+            "title": "Evento editable",
+            "description": "",
+            "area_id": None,
+            "event_at": event_at,
+            "reminders": [60],
+        },
+    )
+    event_id = created.json()["id"]
+    assert app_module.process_telegram_reminders() == 1
+
+    later = (app_module.now_local() + timedelta(days=2)).replace(
+        second=0, microsecond=0, tzinfo=None
+    ).isoformat(timespec="minutes")
+    updated = client.put(
+        f"/api/events/{event_id}",
+        json={
+            "title": "Evento editable",
+            "description": "",
+            "area_id": None,
+            "event_at": later,
+            "reminders": [60],
+        },
+    )
+    assert updated.status_code == 200
+
+    with app_module.db() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM notification_deliveries WHERE event_id=?",
+            (event_id,),
+        ).fetchone()[0]
+    assert count == 0
