@@ -1702,3 +1702,56 @@ def test_vacation_rejects_invalid_return_date_mode_and_area(client):
             "excluded_area_ids": [999999],
         },
     ).status_code == 400
+
+
+def test_reorder_today_ignores_hidden_paused_tasks(client):
+    import app as app_module
+
+    base = app_module.today_local()
+    state = get_state(client)
+    paused_area = next(a for a in state["areas"] if a["name"] == "Alimentación")
+    active_area = next(a for a in state["areas"] if a["name"] == "Piso Fanalwegle")
+
+    paused_task = client.post(
+        "/api/tasks",
+        json=task_payload(title="Oculta en vacaciones", area_id=paused_area["id"]),
+    ).json()["id"]
+    visible_a = client.post(
+        "/api/tasks",
+        json=task_payload(title="Visible A", area_id=active_area["id"]),
+    ).json()["id"]
+    visible_b = client.post(
+        "/api/tasks",
+        json=task_payload(title="Visible B", area_id=active_area["id"]),
+    ).json()["id"]
+
+    for task_id in (paused_task, visible_a, visible_b):
+        assert client.post(f"/api/today/{task_id}").status_code == 200
+
+    assert client.post(
+        "/api/vacation/start",
+        json={
+            "return_date": (base + timedelta(days=5)).isoformat(),
+            "resume_mode": "continue_cycle",
+            "excluded_area_ids": [active_area["id"]],
+        },
+    ).status_code == 200
+
+    during = get_state(client)
+    assert [t["id"] for t in during["today"]] == [visible_a, visible_b]
+
+    reordered = client.post(
+        "/api/today/reorder",
+        json={"task_ids": [visible_b, visible_a]},
+    )
+    assert reordered.status_code == 200
+    assert [t["id"] for t in get_state(client)["today"]] == [visible_b, visible_a]
+
+    assert client.post(f"/api/undo/{reordered.json()['undo_id']}").status_code == 200
+    assert [t["id"] for t in get_state(client)["today"]] == [visible_a, visible_b]
+
+    with app_module.db() as conn:
+        hidden = conn.execute(
+            "SELECT position FROM today_queue WHERE task_id=?", (paused_task,)
+        ).fetchone()
+    assert hidden is not None
