@@ -145,9 +145,9 @@ def init_db():
             conn.executemany(
                 "INSERT INTO people(name,color,icon) VALUES(?,?,?)",
                 [
-                    ("Ana", "#f7c8b6", "👩"),
-                    ("Juan", "#b8d8ff", "👨"),
-                    ("Lucía", "#d8c6ff", "👩‍🦰"),
+                    ("Cosi", "#f7c8b6", "👩"),
+                    ("Jose", "#b8d8ff", "👨"),
+                    ("Li", "#d8c6ff", "👩‍🦰"),
                 ],
             )
 
@@ -159,6 +159,11 @@ def init_db():
                     ("Alimentación", "Planificación, compra, cocina y gestión de alimentos.", "#fff0c9", "🍳"),
                     ("Ropa y textil", "Lavado, sábanas, toallas y productos textiles.", "#ddf5e4", "🧺"),
                     ("Limpieza y mantenimiento", "Limpieza, consumibles y mantenimiento doméstico.", "#d9ecff", "🧹"),
+                    ("Piso Fanalwegle", "Gestión y mantenimiento del piso Fanalwegle.", "#e7eefb", "🏢"),
+                    ("Piso Im Gapetsch", "Gestión y mantenimiento del piso Im Gapetsch.", "#e7eefb", "🏢"),
+                    ("Casa de Cosi", "Gestión, mantenimiento y asuntos relacionados con Casa de Cosi.", "#f7dde4", "🏠"),
+                    ("Vehículos", "Mantenimiento, seguros, revisiones y gestiones de vehículos.", "#fff1c9", "🚗"),
+                    ("Krankenkassen", "Seguros médicos, facturas, reembolsos y gestiones de Krankenkassen.", "#ddf5e4", "🩺"),
                 ],
             )
 
@@ -181,6 +186,52 @@ def init_db():
                        VALUES(?,?,?,?,?,?,?,?,?,1,?)""",
                     (title,desc,category,color,icon,rtype,freq,due.isoformat(),due.isoformat(),iso_now()),
                 )
+
+        # v0.4: adapta los datos iniciales del hogar sin pisar cambios manuales.
+        household_v4 = conn.execute(
+            "SELECT value FROM app_meta WHERE key='household_defaults_v4'"
+        ).fetchone()
+        if not household_v4:
+            default_renames = {
+                "Ana": "Cosi",
+                "Juan": "Jose",
+                "Lucía": "Li",
+            }
+            for old_name, new_name in default_renames.items():
+                old = conn.execute(
+                    "SELECT id FROM people WHERE name=?", (old_name,)
+                ).fetchone()
+                target = conn.execute(
+                    "SELECT id FROM people WHERE name=?", (new_name,)
+                ).fetchone()
+                if old and not target:
+                    conn.execute(
+                        "UPDATE people SET name=? WHERE id=?",
+                        (new_name, old["id"]),
+                    )
+
+            requested_areas = [
+                ("Piso Fanalwegle", "Gestión y mantenimiento del piso Fanalwegle.", "#e7eefb", "🏢"),
+                ("Piso Im Gapetsch", "Gestión y mantenimiento del piso Im Gapetsch.", "#e7eefb", "🏢"),
+                ("Casa de Cosi", "Gestión, mantenimiento y asuntos relacionados con Casa de Cosi.", "#f7dde4", "🏠"),
+                ("Vehículos", "Mantenimiento, seguros, revisiones y gestiones de vehículos.", "#fff1c9", "🚗"),
+                ("Krankenkassen", "Seguros médicos, facturas, reembolsos y gestiones de Krankenkassen.", "#ddf5e4", "🩺"),
+            ]
+            for name, description, color, icon in requested_areas:
+                existing = conn.execute(
+                    "SELECT id FROM areas WHERE name=?", (name,)
+                ).fetchone()
+                if not existing:
+                    conn.execute(
+                        """INSERT INTO areas(name,description,color,icon)
+                           VALUES(?,?,?,?)""",
+                        (name, description, color, icon),
+                    )
+
+            conn.execute(
+                "INSERT INTO app_meta(key,value) VALUES('household_defaults_v4',?)",
+                (iso_now(),),
+            )
 
         # v0.2: Hoy pasa a ser una cola manual. Limpiamos una sola vez
         # las filas que las versiones anteriores añadían automáticamente.
