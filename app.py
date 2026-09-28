@@ -27,7 +27,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_POLL_SECONDS = max(30, int(os.getenv("TELEGRAM_POLL_SECONDS", "60") or "60"))
 TELEGRAM_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="0.6.0")
+app = FastAPI(title="Casa Tareas", version="0.7.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -536,6 +536,8 @@ def telegram_status(conn):
         "token_configured": bool(TELEGRAM_BOT_TOKEN),
         "chat_id": int(chat_id) if chat_id else None,
         "chat_title": get_meta(conn, "telegram_chat_title", ""),
+        "bot_username": get_meta(conn, "telegram_bot_username", ""),
+        "commands_enabled": bool(chat_id and TELEGRAM_BOT_TOKEN),
         "poll_seconds": TELEGRAM_POLL_SECONDS,
     }
 
@@ -1568,7 +1570,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.6.0"}
+    return {"ok": True, "version": "0.7.0"}
 
 
 @app.get("/api/state")
@@ -1730,7 +1732,7 @@ def test_telegram():
             "sendMessage",
             {
                 "chat_id": chat_id,
-                "text": "✅ Casa Tareas está conectado con Telegram. Los recordatorios se enviarán a este chat.",
+                "text": "✅ Casa Tareas está conectado con Telegram.\n\nAdemás de recibir recordatorios, puedes escribir /ayuda para ver los comandos disponibles.",
             },
         )
     except RuntimeError as exc:
