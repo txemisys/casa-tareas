@@ -47,6 +47,12 @@ def iso_now():
     return now_local().isoformat(timespec="seconds")
 
 
+def ensure_column(conn, table, column, definition):
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db():
     with db() as conn:
         conn.executescript("""
@@ -56,6 +62,16 @@ def init_db():
           color TEXT NOT NULL DEFAULT '#f7c8b6',
           icon TEXT NOT NULL DEFAULT '👤',
           active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS areas(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT NOT NULL DEFAULT '',
+          color TEXT NOT NULL DEFAULT '#e7eefb',
+          icon TEXT NOT NULL DEFAULT '🏠',
+          owner_person_id INTEGER,
+          active INTEGER NOT NULL DEFAULT 1,
+          FOREIGN KEY(owner_person_id) REFERENCES people(id) ON DELETE SET NULL
         );
         CREATE TABLE IF NOT EXISTS tasks(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,8 +85,15 @@ def init_db():
           frequency_days INTEGER,
           initial_due_date TEXT,
           anchor_date TEXT,
+          area_id INTEGER,
+          owner_person_id INTEGER,
+          task_type TEXT NOT NULL DEFAULT 'execution',
+          definition_of_done TEXT NOT NULL DEFAULT '',
+          responsibility_notes TEXT NOT NULL DEFAULT '',
           active INTEGER NOT NULL DEFAULT 1,
-          created_at TEXT NOT NULL
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+          FOREIGN KEY(owner_person_id) REFERENCES people(id) ON DELETE SET NULL
         );
         CREATE TABLE IF NOT EXISTS completions(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,6 +134,13 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_undo_open ON undo_actions(undone_at, id DESC);
         """)
 
+        # Migraciones aditivas para bases creadas por versiones anteriores.
+        ensure_column(conn, "tasks", "area_id", "INTEGER REFERENCES areas(id) ON DELETE SET NULL")
+        ensure_column(conn, "tasks", "owner_person_id", "INTEGER REFERENCES people(id) ON DELETE SET NULL")
+        ensure_column(conn, "tasks", "task_type", "TEXT NOT NULL DEFAULT 'execution'")
+        ensure_column(conn, "tasks", "definition_of_done", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "tasks", "responsibility_notes", "TEXT NOT NULL DEFAULT ''")
+
         if conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO people(name,color,icon) VALUES(?,?,?)",
@@ -118,6 +148,17 @@ def init_db():
                     ("Ana", "#f7c8b6", "👩"),
                     ("Juan", "#b8d8ff", "👨"),
                     ("Lucía", "#d8c6ff", "👩‍🦰"),
+                ],
+            )
+
+        if conn.execute("SELECT COUNT(*) FROM areas").fetchone()[0] == 0:
+            conn.executemany(
+                """INSERT INTO areas(name,description,color,icon)
+                   VALUES(?,?,?,?)""",
+                [
+                    ("Alimentación", "Planificación, compra, cocina y gestión de alimentos.", "#fff0c9", "🍳"),
+                    ("Ropa y textil", "Lavado, sábanas, toallas y productos textiles.", "#ddf5e4", "🧺"),
+                    ("Limpieza y mantenimiento", "Limpieza, consumibles y mantenimiento doméstico.", "#d9ecff", "🧹"),
                 ],
             )
 
@@ -263,11 +304,55 @@ def latest_undo(conn):
     return dict(row) if row else None
 
 
+def area_json(conn, area):
+    d = dict(area)
+    d["active"] = bool(d["active"])
+    owner = None
+    if d.get("owner_person_id"):
+        row = conn.execute(
+            "SELECT id,name,color,icon,active FROM people WHERE id=?",
+            (d["owner_person_id"],),
+        ).fetchone()
+        owner = dict(row) if row else None
+    d["owner"] = owner
+    d["task_count"] = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE area_id=? AND active=1",
+        (d["id"],),
+    ).fetchone()[0]
+    return d
+
+
 def task_json(conn, task):
     d = dict(task)
     d["active"] = bool(d["active"])
     due = due_date(conn, task)
     d["next_due"] = due.isoformat() if due else None
+
+    area = None
+    if d.get("area_id"):
+        row = conn.execute("SELECT * FROM areas WHERE id=?", (d["area_id"],)).fetchone()
+        if row:
+            area = dict(row)
+            area["active"] = bool(area["active"])
+    d["area"] = area
+
+    owner_id = d.get("owner_person_id")
+    source = "task" if owner_id else None
+    if not owner_id and area and area["active"]:
+        owner_id = area.get("owner_person_id")
+        source = "area" if owner_id else None
+
+    owner = None
+    if owner_id:
+        row = conn.execute(
+            "SELECT id,name,color,icon,active FROM people WHERE id=?",
+            (owner_id,),
+        ).fetchone()
+        if row and row["active"]:
+            owner = dict(row)
+    d["effective_owner"] = owner
+    d["responsibility_source"] = source
+
     last = last_completion(conn, task["id"])
     if last:
         p = conn.execute(
@@ -280,6 +365,21 @@ def task_json(conn, task):
     return d
 
 
+def validate_task_responsibility(conn, area_id, owner_person_id):
+    if area_id is not None:
+        area = conn.execute(
+            "SELECT id FROM areas WHERE id=? AND active=1", (area_id,)
+        ).fetchone()
+        if not area:
+            raise HTTPException(400, "Área no válida o archivada")
+    if owner_person_id is not None:
+        owner = conn.execute(
+            "SELECT id FROM people WHERE id=? AND active=1", (owner_person_id,)
+        ).fetchone()
+        if not owner:
+            raise HTTPException(400, "Responsable no válido o inactivo")
+
+
 class TaskIn(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     description: str = ""
@@ -290,6 +390,19 @@ class TaskIn(BaseModel):
     frequency_days: int | None = Field(default=None, ge=1, le=3650)
     initial_due_date: str | None = None
     anchor_date: str | None = None
+    area_id: int | None = None
+    owner_person_id: int | None = None
+    task_type: str = "execution"
+    definition_of_done: str = ""
+    responsibility_notes: str = ""
+
+
+class AreaIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = ""
+    color: str = "#e7eefb"
+    icon: str = "🏠"
+    owner_person_id: int | None = None
 
 
 class CompleteIn(BaseModel):
@@ -322,7 +435,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.2.0"}
+    return {"ok": True, "version": "0.3.0"}
 
 
 @app.get("/api/state")
@@ -336,6 +449,13 @@ def state():
             ).fetchall()
         ]
         people = [p for p in people_all if p["active"]]
+        areas_all = [
+            area_json(conn, r)
+            for r in conn.execute(
+                "SELECT * FROM areas ORDER BY active DESC,name COLLATE NOCASE,id"
+            ).fetchall()
+        ]
+        areas = [a for a in areas_all if a["active"]]
         tasks = [
             task_json(conn, r)
             for r in conn.execute(
@@ -385,6 +505,8 @@ def state():
         return {
             "people": people,
             "people_all": people_all,
+            "areas": areas,
+            "areas_all": areas_all,
             "today": today,
             "upcoming": upcoming,
             "tasks": tasks,
@@ -398,13 +520,17 @@ def state():
 def create_task(payload: TaskIn):
     if payload.recurrence_type not in {"none", "cycle", "fixed"}:
         raise HTTPException(400, "Recurrencia no válida")
+    if payload.task_type not in {"execution", "management"}:
+        raise HTTPException(400, "Tipo de tarea no válido")
     due = payload.initial_due_date or today_local().isoformat()
     anchor = payload.anchor_date or due
     with db() as conn:
+        validate_task_responsibility(conn, payload.area_id, payload.owner_person_id)
         cur = conn.execute(
             """INSERT INTO tasks(title,description,category,color,icon,recurrence_type,
-               frequency_days,initial_due_date,anchor_date,active,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?,1,?)""",
+               frequency_days,initial_due_date,anchor_date,area_id,owner_person_id,
+               task_type,definition_of_done,responsibility_notes,active,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (
                 payload.title.strip(),
                 payload.description.strip(),
@@ -415,6 +541,11 @@ def create_task(payload: TaskIn):
                 payload.frequency_days,
                 due,
                 anchor,
+                payload.area_id,
+                payload.owner_person_id,
+                payload.task_type,
+                payload.definition_of_done.strip(),
+                payload.responsibility_notes.strip(),
                 iso_now(),
             ),
         )
@@ -425,14 +556,18 @@ def create_task(payload: TaskIn):
 def update_task(task_id: int, payload: TaskIn):
     if payload.recurrence_type not in {"none", "cycle", "fixed"}:
         raise HTTPException(400, "Recurrencia no válida")
+    if payload.task_type not in {"execution", "management"}:
+        raise HTTPException(400, "Tipo de tarea no válido")
     with db() as conn:
         task_row(conn, task_id)
+        validate_task_responsibility(conn, payload.area_id, payload.owner_person_id)
         due = payload.initial_due_date or today_local().isoformat()
         anchor = payload.anchor_date or due
         conn.execute(
             """UPDATE tasks SET title=?,description=?,category=?,color=?,icon=?,
-               recurrence_type=?,frequency_days=?,initial_due_date=?,anchor_date=?
-               WHERE id=?""",
+               recurrence_type=?,frequency_days=?,initial_due_date=?,anchor_date=?,
+               area_id=?,owner_person_id=?,task_type=?,definition_of_done=?,
+               responsibility_notes=? WHERE id=?""",
             (
                 payload.title.strip(),
                 payload.description.strip(),
@@ -443,6 +578,11 @@ def update_task(task_id: int, payload: TaskIn):
                 payload.frequency_days,
                 due,
                 anchor,
+                payload.area_id,
+                payload.owner_person_id,
+                payload.task_type,
+                payload.definition_of_done.strip(),
+                payload.responsibility_notes.strip(),
                 task_id,
             ),
         )
@@ -637,6 +777,110 @@ def complete(task_id: int, payload: CompleteIn):
         return {"ok": True, "undo_id": undo_id}
 
 
+@app.post("/api/areas")
+def create_area(payload: AreaIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del área no puede estar vacío")
+    with db() as conn:
+        if payload.owner_person_id is not None:
+            validate_task_responsibility(conn, None, payload.owner_person_id)
+        existing = conn.execute("SELECT * FROM areas WHERE name=?", (name,)).fetchone()
+        if existing:
+            if existing["active"]:
+                raise HTTPException(409, "Ya existe un área con ese nombre")
+            conn.execute(
+                """UPDATE areas SET active=1,description=?,color=?,icon=?,
+                   owner_person_id=? WHERE id=?""",
+                (
+                    payload.description.strip(),
+                    payload.color,
+                    payload.icon,
+                    payload.owner_person_id,
+                    existing["id"],
+                ),
+            )
+            return {"id": existing["id"], "reactivated": True}
+
+        cur = conn.execute(
+            """INSERT INTO areas(name,description,color,icon,owner_person_id)
+               VALUES(?,?,?,?,?)""",
+            (
+                name,
+                payload.description.strip(),
+                payload.color,
+                payload.icon,
+                payload.owner_person_id,
+            ),
+        )
+        return {"id": cur.lastrowid, "reactivated": False}
+
+
+@app.put("/api/areas/{area_id}")
+def update_area(area_id: int, payload: AreaIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del área no puede estar vacío")
+    with db() as conn:
+        area = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+        if not area:
+            raise HTTPException(404, "Área no encontrada")
+        if payload.owner_person_id is not None:
+            validate_task_responsibility(conn, None, payload.owner_person_id)
+        try:
+            conn.execute(
+                """UPDATE areas SET name=?,description=?,color=?,icon=?,
+                   owner_person_id=? WHERE id=?""",
+                (
+                    name,
+                    payload.description.strip(),
+                    payload.color,
+                    payload.icon,
+                    payload.owner_person_id,
+                    area_id,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "Ya existe un área con ese nombre")
+        return {"ok": True}
+
+
+@app.delete("/api/areas/{area_id}")
+def archive_area(area_id: int):
+    with db() as conn:
+        area = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+        if not area:
+            raise HTTPException(404, "Área no encontrada")
+        if not area["active"]:
+            return {"ok": True, "undo_id": None}
+        conn.execute("UPDATE areas SET active=0 WHERE id=?", (area_id,))
+        undo_id = record_undo(
+            conn,
+            "area_active",
+            {"area_id": area_id, "previous_active": 1},
+            f'Archivada el área "{area["name"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id}
+
+
+@app.post("/api/areas/{area_id}/restore")
+def restore_area(area_id: int):
+    with db() as conn:
+        area = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+        if not area:
+            raise HTTPException(404, "Área no encontrada")
+        if area["active"]:
+            return {"ok": True, "undo_id": None}
+        conn.execute("UPDATE areas SET active=1 WHERE id=?", (area_id,))
+        undo_id = record_undo(
+            conn,
+            "area_active",
+            {"area_id": area_id, "previous_active": 0},
+            f'Reactivada el área "{area["name"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id}
+
+
 @app.post("/api/people")
 def create_person(payload: PersonIn):
     name = payload.name.strip()
@@ -783,6 +1027,12 @@ def undo(undo_id: int):
             conn.execute(
                 "UPDATE people SET active=? WHERE id=?",
                 (payload["previous_active"], payload["person_id"]),
+            )
+
+        elif action == "area_active":
+            conn.execute(
+                "UPDATE areas SET active=? WHERE id=?",
+                (payload["previous_active"], payload["area_id"]),
             )
 
         else:
