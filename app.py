@@ -27,7 +27,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_POLL_SECONDS = max(30, int(os.getenv("TELEGRAM_POLL_SECONDS", "60") or "60"))
 TELEGRAM_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="0.8.0")
+app = FastAPI(title="Casa Tareas", version="0.9.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -78,6 +78,9 @@ def init_db():
           color TEXT NOT NULL DEFAULT '#e7eefb',
           icon TEXT NOT NULL DEFAULT '🏠',
           owner_person_id INTEGER,
+          pause_started_on TEXT,
+          paused_until TEXT,
+          pause_resume_mode TEXT,
           active INTEGER NOT NULL DEFAULT 1,
           FOREIGN KEY(owner_person_id) REFERENCES people(id) ON DELETE SET NULL
         );
@@ -99,6 +102,9 @@ def init_db():
           definition_of_done TEXT NOT NULL DEFAULT '',
           responsibility_notes TEXT NOT NULL DEFAULT '',
           estimated_minutes INTEGER,
+          pause_started_on TEXT,
+          paused_until TEXT,
+          pause_resume_mode TEXT,
           active INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
           FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
@@ -196,6 +202,12 @@ def init_db():
         ensure_column(conn, "tasks", "definition_of_done", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "tasks", "responsibility_notes", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "tasks", "estimated_minutes", "INTEGER")
+        ensure_column(conn, "tasks", "pause_started_on", "TEXT")
+        ensure_column(conn, "tasks", "paused_until", "TEXT")
+        ensure_column(conn, "tasks", "pause_resume_mode", "TEXT")
+        ensure_column(conn, "areas", "pause_started_on", "TEXT")
+        ensure_column(conn, "areas", "paused_until", "TEXT")
+        ensure_column(conn, "areas", "pause_resume_mode", "TEXT")
 
         if conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
             conn.executemany(
@@ -1583,6 +1595,15 @@ class TelegramChatIn(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
+class PauseIn(BaseModel):
+    return_date: str
+    resume_mode: str = "continue_cycle"
+
+
+class VacationIn(PauseIn):
+    excluded_area_ids: list[int] = Field(default_factory=list)
+
+
 class CompleteIn(BaseModel):
     person_id: int
 
@@ -1628,7 +1649,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.8.0"}
+    return {"ok": True, "version": "0.9.0"}
 
 
 @app.get("/api/state")
