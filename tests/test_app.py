@@ -2349,3 +2349,147 @@ def test_completion_not_originating_in_today_is_not_drag_reversible(client):
         f"/api/completions/{history_item['id']}/undo-to-today"
     )
     assert blocked.status_code == 409
+
+
+def test_web_managed_telegram_token_is_validated_stored_and_never_exposed(
+    client, monkeypatch
+):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "")
+    secret = "123456789:TEST_SECRET_TOKEN_NEVER_EXPOSE"
+    calls = []
+
+    def fake_telegram(method, payload=None, token=None):
+        calls.append((method, dict(payload or {}), token))
+        assert token == secret
+        if method == "getMe":
+            return {
+                "id": 123456789,
+                "username": "casa_tareas_test_bot",
+                "first_name": "Casa Tareas",
+            }
+        if method == "setMyCommands":
+            return True
+        if method == "getUpdates":
+            return []
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+
+    saved = client.put(
+        "/api/settings/telegram-token",
+        json={"token": secret},
+    )
+    assert saved.status_code == 200
+    telegram = saved.json()["telegram"]
+    assert telegram["token_configured"] is True
+    assert telegram["token_source"] == "application"
+    assert telegram["token_editable"] is True
+    assert telegram["bot_username"] == "casa_tareas_test_bot"
+    assert secret not in str(saved.json())
+
+    with app_module.db() as conn:
+        assert app_module.get_meta(conn, "telegram_bot_token") == secret
+
+    settings = client.get("/api/settings")
+    assert settings.status_code == 200
+    assert secret not in settings.text
+    assert settings.json()["telegram"]["token_source"] == "application"
+
+    state = get_state(client)
+    assert secret not in str(state)
+    assert state["settings"]["telegram"]["token_configured"] is True
+
+    assert any(method == "getMe" for method, _, _ in calls)
+    assert any(method == "setMyCommands" for method, _, _ in calls)
+
+    deleted = client.delete("/api/settings/telegram-token")
+    assert deleted.status_code == 200
+    assert deleted.json()["telegram"]["token_configured"] is False
+    with app_module.db() as conn:
+        assert app_module.get_meta(conn, "telegram_bot_token") is None
+        assert app_module.get_meta(conn, "telegram_bot_username") is None
+
+
+def test_environment_telegram_token_cannot_be_overwritten_from_web(
+    client, monkeypatch
+):
+    import app as app_module
+
+    environment_secret = "987654321:ENVIRONMENT_SECRET_TOKEN"
+    monkeypatch.setattr(
+        app_module,
+        "TELEGRAM_BOT_TOKEN",
+        environment_secret,
+    )
+
+    settings = client.get("/api/settings")
+    assert settings.status_code == 200
+    telegram = settings.json()["telegram"]
+    assert telegram["token_configured"] is True
+    assert telegram["token_source"] == "environment"
+    assert telegram["token_editable"] is False
+    assert environment_secret not in settings.text
+
+    blocked = client.put(
+        "/api/settings/telegram-token",
+        json={"token": "123456789:OTHER_VALID_LOOKING_TOKEN"},
+    )
+    assert blocked.status_code == 409
+
+    blocked_delete = client.delete("/api/settings/telegram-token")
+    assert blocked_delete.status_code == 409
+
+
+def test_runtime_settings_apply_without_container_restart(client):
+    import app as app_module
+
+    updated = client.put(
+        "/api/settings/runtime",
+        json={
+            "timezone": "UTC",
+            "telegram_poll_seconds": 90,
+            "ical_sync_minutes": 15,
+            "max_attachment_mb": 32,
+        },
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["runtime"] == {
+        "timezone": "UTC",
+        "telegram_poll_seconds": 90,
+        "ical_sync_minutes": 15,
+        "max_attachment_bytes": 32 * 1024 * 1024,
+        "max_attachment_mb": 32,
+    }
+    assert app_module.TZ.key == "UTC"
+    assert app_module.TELEGRAM_POLL_SECONDS == 90
+    assert app_module.ICAL_SYNC_MINUTES == 15
+    assert app_module.MAX_ATTACHMENT_BYTES == 32 * 1024 * 1024
+
+    with app_module.db() as conn:
+        assert app_module.get_meta(conn, "setting_timezone") == "UTC"
+        assert app_module.get_meta(conn, "setting_telegram_poll_seconds") == "90"
+        assert app_module.get_meta(conn, "setting_ical_sync_minutes") == "15"
+        assert (
+            app_module.get_meta(conn, "setting_max_attachment_bytes")
+            == str(32 * 1024 * 1024)
+        )
+
+    settings = client.get("/api/settings").json()
+    assert settings["runtime"]["timezone"] == "UTC"
+    assert settings["attachments"]["max_mb"] == 32
+
+
+def test_runtime_settings_reject_invalid_timezone(client):
+    invalid = client.put(
+        "/api/settings/runtime",
+        json={
+            "timezone": "Mars/Olympus",
+            "telegram_poll_seconds": 60,
+            "ical_sync_minutes": 30,
+            "max_attachment_mb": 20,
+        },
+    )
+    assert invalid.status_code == 400
