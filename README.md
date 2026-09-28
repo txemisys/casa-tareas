@@ -18,6 +18,19 @@ MVP autohospedado para gestionar tareas domésticas con una cola pequeña de **H
 - SQLite y una sola aplicación FastAPI.
 - Interfaz responsive para móvil.
 
+## Pruebas automáticas
+
+El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
+
+Para ejecutarlas localmente:
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q
+```
+
+GitHub Actions ejecuta automáticamente los tests y construye la imagen Docker en cada cambio a `main` y en cada pull request.
+
 ## Arranque con Docker
 
 Requiere Docker Engine o Docker Desktop con Compose.
