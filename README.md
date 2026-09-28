@@ -137,6 +137,18 @@ Si se añadió por error, puede devolverse a **Próximamente** de dos formas:
 
 La acción solo elimina la entrada de `today_queue`; no cambia `next_due`, recurrencia, necesidad ni historial. También genera una acción **Deshacer**, que restaura la tarea en la misma posición que tenía en Hoy.
 
+## Deshacer una realización desde el tablero
+
+Si una tarea que estaba en **Hoy** se marca como realizada por error, la realización más reciente de esa tarea puede devolverse a **Hoy**:
+
+- En escritorio, arrastrando **Realizadas → Hoy**.
+- En cualquier dispositivo, pulsando **↶ Volver a Hoy** en la tarjeta realizada.
+
+La operación deshace la realización concreta: elimina ese registro del historial, reactiva la tarea si era puntual, restaura una programación temporal que se hubiera consumido y recupera la posición que tenía en la cola de Hoy.
+
+Por seguridad, si una tarea tiene varias realizaciones registradas, deben deshacerse en orden inverso: primero la más reciente. Una realización que no procedía de la cola de Hoy no se ofrece como arrastrable hacia Hoy.
+
+
 ## Necesidad, sugerencias y duración
 
 Las tareas recurrentes calculan una **necesidad** entre 0 % y 100 % según cuánto ha avanzado su ciclo.
