@@ -444,7 +444,7 @@ def task_need(conn, task):
 
     elapsed = (today_local() - cycle_start).days
     score = round((elapsed / freq) * 100)
-    score = max(0, min(200, score))
+    score = max(0, min(100, score))
 
     if score < 40:
         label = "Puede esperar"
@@ -1690,6 +1690,7 @@ def state():
             ],
             key=lambda t: (
                 -(t["need_score"] or 0),
+                t["next_due"] or "9999-12-31",
                 t["estimated_minutes"] if t["estimated_minutes"] is not None else 99999,
                 t["title"].lower(),
             ),
