@@ -319,6 +319,10 @@ def area_json(conn, area):
         "SELECT COUNT(*) FROM tasks WHERE area_id=? AND active=1",
         (d["id"],),
     ).fetchone()[0]
+    d["total_task_count"] = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE area_id=?",
+        (d["id"],),
+    ).fetchone()[0]
     return d
 
 
@@ -403,6 +407,10 @@ class AreaIn(BaseModel):
     color: str = "#e7eefb"
     icon: str = "🏠"
     owner_person_id: int | None = None
+
+
+class AreaMoveIn(BaseModel):
+    area_id: int | None = None
 
 
 class CompleteIn(BaseModel):
@@ -587,6 +595,35 @@ def update_task(task_id: int, payload: TaskIn):
             ),
         )
         return {"ok": True}
+
+
+@app.put("/api/tasks/{task_id}/area")
+def move_task_area(task_id: int, payload: AreaMoveIn):
+    with db() as conn:
+        task = task_row(conn, task_id)
+        if payload.area_id is not None:
+            area = conn.execute(
+                "SELECT id FROM areas WHERE id=? AND active=1",
+                (payload.area_id,),
+            ).fetchone()
+            if not area:
+                raise HTTPException(400, "El área de destino no existe o está archivada")
+
+        previous_area_id = task["area_id"]
+        if previous_area_id == payload.area_id:
+            return {"ok": True, "undo_id": None}
+
+        conn.execute(
+            "UPDATE tasks SET area_id=? WHERE id=?",
+            (payload.area_id, task_id),
+        )
+        undo_id = record_undo(
+            conn,
+            "move_task_area",
+            {"task_id": task_id, "previous_area_id": previous_area_id},
+            f'Movida de área "{task["title"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id}
 
 
 @app.delete("/api/tasks/{task_id}")
@@ -863,6 +900,27 @@ def archive_area(area_id: int):
         return {"ok": True, "undo_id": undo_id}
 
 
+@app.delete("/api/areas/{area_id}/hard")
+def delete_area_permanently(area_id: int):
+    with db() as conn:
+        area = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+        if not area:
+            raise HTTPException(404, "Área no encontrada")
+
+        task_count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE area_id=?",
+            (area_id,),
+        ).fetchone()[0]
+        if task_count:
+            raise HTTPException(
+                409,
+                f"El área todavía tiene {task_count} tarea(s) asociada(s). Muévelas a otra área antes de eliminarla.",
+            )
+
+        conn.execute("DELETE FROM areas WHERE id=?", (area_id,))
+        return {"ok": True}
+
+
 @app.post("/api/areas/{area_id}/restore")
 def restore_area(area_id: int):
     with db() as conn:
@@ -1033,6 +1091,12 @@ def undo(undo_id: int):
             conn.execute(
                 "UPDATE areas SET active=? WHERE id=?",
                 (payload["previous_active"], payload["area_id"]),
+            )
+
+        elif action == "move_task_area":
+            conn.execute(
+                "UPDATE tasks SET area_id=? WHERE id=?",
+                (payload.get("previous_area_id"), payload["task_id"]),
             )
 
         else:
