@@ -969,14 +969,18 @@ def sync_all_calendars():
 
 
 async def calendar_sync_loop():
+    last_sync = 0.0
     while True:
         try:
-            await asyncio.to_thread(sync_all_calendars)
+            now_tick = time.monotonic()
+            if last_sync == 0.0 or now_tick - last_sync >= ICAL_SYNC_MINUTES * 60:
+                await asyncio.to_thread(sync_all_calendars)
+                last_sync = time.monotonic()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             print(f"iCal worker error: {exc}", flush=True)
-        await asyncio.sleep(ICAL_SYNC_MINUTES * 60)
+        await asyncio.sleep(30)
 
 
 def area_json(conn, area):
@@ -1542,21 +1546,28 @@ def assert_vacation_can_start(conn, excluded_area_ids):
 
 def telegram_status(conn):
     chat_id = get_meta(conn, "telegram_chat_id")
+    token = telegram_bot_token(conn)
+    source = telegram_token_source(conn)
     return {
-        "token_configured": bool(TELEGRAM_BOT_TOKEN),
+        "token_configured": bool(token),
+        "token_source": source,
+        "token_editable": source != "environment",
         "chat_id": int(chat_id) if chat_id else None,
         "chat_title": get_meta(conn, "telegram_chat_title", ""),
         "bot_username": get_meta(conn, "telegram_bot_username", ""),
-        "commands_enabled": bool(chat_id and TELEGRAM_BOT_TOKEN),
+        "commands_enabled": bool(chat_id and token),
         "poll_seconds": TELEGRAM_POLL_SECONDS,
+        "last_contact_at": get_meta(conn, "telegram_last_contact_at"),
+        "worker_running": bool(TELEGRAM_TASK and not TELEGRAM_TASK.done()),
     }
 
 
-def telegram_api_request(method, payload=None):
-    if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("Falta TELEGRAM_BOT_TOKEN en la configuración del contenedor")
+def telegram_api_request(method, payload=None, token=None):
+    active_token = (token or telegram_bot_token()).strip()
+    if not active_token:
+        raise RuntimeError("Telegram todavía no está configurado")
     payload = payload or {}
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    url = f"https://api.telegram.org/bot{active_token}/{method}"
     body = urllib.parse.urlencode(payload).encode("utf-8")
     request = urllib.request.Request(url, data=body, method="POST")
     api_wait = int(payload.get("timeout", 0) or 0)
@@ -1665,7 +1676,7 @@ def telegram_event_message(event, reminder_minutes):
 
 
 def process_telegram_reminders():
-    if not TELEGRAM_BOT_TOKEN:
+    if not telegram_bot_token():
         return 0
 
     with db() as conn:
@@ -2445,7 +2456,7 @@ def process_telegram_update(update):
 
 
 def process_telegram_updates(timeout=20):
-    if not TELEGRAM_BOT_TOKEN:
+    if not telegram_bot_token():
         return 0
     with db() as conn:
         offset = int(get_meta(conn, "telegram_update_offset", "0") or 0)
@@ -2461,6 +2472,8 @@ def process_telegram_updates(timeout=20):
             ),
         },
     ) or []
+    with db() as conn:
+        set_meta(conn, "telegram_last_contact_at", iso_now())
 
     processed = 0
     for update in updates:
@@ -2494,8 +2507,8 @@ def process_telegram_updates(timeout=20):
     return processed
 
 
-def ensure_telegram_bot_identity():
-    info = telegram_api_request("getMe")
+def ensure_telegram_bot_identity(token=None):
+    info = telegram_api_request("getMe", token=token)
     bot_id = str(info.get("id"))
     username = info.get("username", "")
     with db() as conn:
@@ -2517,6 +2530,7 @@ def ensure_telegram_bot_identity():
         {"command": "tarea", "description": "Crear una tarea"},
         {"command": "hecha", "description": "Marcar una tarea como hecha"},
         {"command": "mover", "description": "Mover una tarea de área"},
+        {"command": "renombrar", "description": "Renombrar una tarea"},
         {"command": "posponer", "description": "Posponer una tarea"},
         {"command": "evento", "description": "Crear un evento"},
         {"command": "deshacer", "description": "Deshacer el último cambio del bot"},
@@ -2525,17 +2539,28 @@ def ensure_telegram_bot_identity():
     telegram_api_request(
         "setMyCommands",
         {"commands": json.dumps(commands, ensure_ascii=False)},
+        token=token,
     )
     return info
 
 
 async def telegram_reminder_loop():
     identity_ready = False
+    active_token = None
     last_reminder_check = 0.0
     while True:
         try:
+            token = await asyncio.to_thread(telegram_bot_token)
+            if not token:
+                active_token = None
+                identity_ready = False
+                await asyncio.sleep(2)
+                continue
+            if token != active_token:
+                active_token = token
+                identity_ready = False
             if not identity_ready:
-                await asyncio.to_thread(ensure_telegram_bot_identity)
+                await asyncio.to_thread(ensure_telegram_bot_identity, token)
                 identity_ready = True
 
             def sync_pauses_once():
