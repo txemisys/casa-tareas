@@ -397,3 +397,118 @@ def test_task_rejects_invalid_area_owner_and_type(client):
 
     payload = task_payload(task_type="unknown")
     assert client.post("/api/tasks", json=payload).status_code == 400
+
+
+def test_area_cannot_be_deleted_until_all_tasks_are_moved(client):
+    state = get_state(client)
+
+    source = client.post(
+        "/api/areas",
+        json={
+            "name": "Piso alquiler A",
+            "description": "Gestión integral del inmueble.",
+            "color": "#e7eefb",
+            "icon": "🏢",
+            "owner_person_id": state["people"][0]["id"],
+        },
+    )
+    assert source.status_code == 200
+    source_id = source.json()["id"]
+
+    destination = client.post(
+        "/api/areas",
+        json={
+            "name": "Administración patrimonial",
+            "description": "Gestión general.",
+            "color": "#ddf5e4",
+            "icon": "📁",
+            "owner_person_id": state["people"][1]["id"],
+        },
+    )
+    assert destination.status_code == 200
+    destination_id = destination.json()["id"]
+
+    first = client.post(
+        "/api/tasks",
+        json=task_payload(title="Revisar alquiler", area_id=source_id, task_type="management"),
+    )
+    second = client.post(
+        "/api/tasks",
+        json=task_payload(title="Revisar seguro del piso", area_id=source_id, task_type="management"),
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_id = first.json()["id"]
+    second_id = second.json()["id"]
+
+    # Incluso una tarea archivada sigue contando como asociada.
+    assert client.delete(f"/api/tasks/{second_id}").status_code == 200
+    area = next(a for a in get_state(client)["areas"] if a["id"] == source_id)
+    assert area["task_count"] == 1
+    assert area["total_task_count"] == 2
+
+    blocked = client.delete(f"/api/areas/{source_id}/hard")
+    assert blocked.status_code == 409
+    assert "2 tarea(s) asociada(s)" in blocked.json()["detail"]
+
+    moved_first = client.put(
+        f"/api/tasks/{first_id}/area",
+        json={"area_id": destination_id},
+    )
+    assert moved_first.status_code == 200
+
+    still_blocked = client.delete(f"/api/areas/{source_id}/hard")
+    assert still_blocked.status_code == 409
+
+    moved_second = client.put(
+        f"/api/tasks/{second_id}/area",
+        json={"area_id": destination_id},
+    )
+    assert moved_second.status_code == 200
+
+    source_after = next(a for a in get_state(client)["areas"] if a["id"] == source_id)
+    assert source_after["total_task_count"] == 0
+
+    deleted = client.delete(f"/api/areas/{source_id}/hard")
+    assert deleted.status_code == 200
+    assert all(a["id"] != source_id for a in get_state(client)["areas_all"])
+
+
+def test_move_task_between_areas_is_undoable(client):
+    state = get_state(client)
+    area_a = state["areas"][0]["id"]
+    area_b = state["areas"][1]["id"]
+
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(title="Mover entre áreas", area_id=area_a),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    moved = client.put(
+        f"/api/tasks/{task_id}/area",
+        json={"area_id": area_b},
+    )
+    assert moved.status_code == 200
+    undo_id = moved.json()["undo_id"]
+    assert task_from_state(get_state(client), task_id)["area_id"] == area_b
+
+    undone = client.post(f"/api/undo/{undo_id}")
+    assert undone.status_code == 200
+    assert task_from_state(get_state(client), task_id)["area_id"] == area_a
+
+
+def test_task_cannot_be_moved_into_archived_area(client):
+    state = get_state(client)
+    area_id = state["areas"][0]["id"]
+    task_id = state["tasks"][0]["id"]
+
+    archived = client.delete(f"/api/areas/{area_id}")
+    assert archived.status_code == 200
+
+    response = client.put(
+        f"/api/tasks/{task_id}/area",
+        json={"area_id": area_id},
+    )
+    assert response.status_code == 400
