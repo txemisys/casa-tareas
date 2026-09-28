@@ -1062,6 +1062,7 @@ def update_event(event_id: int, payload: EventIn):
             ),
         )
         conn.execute("DELETE FROM event_alert_ack WHERE event_id=?", (event_id,))
+        conn.execute("DELETE FROM notification_deliveries WHERE event_id=?", (event_id,))
         return {"ok": True}
 
 
