@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta
 
 
@@ -728,18 +729,6 @@ def test_telegram_detect_connect_test_and_disconnect(client, monkeypatch):
     sent = []
 
     def fake_telegram(method, payload=None):
-        if method == "getUpdates":
-            return [
-                {
-                    "message": {
-                        "chat": {
-                            "id": -1001234567890,
-                            "title": 'Casa "Familia"',
-                            "type": "supergroup",
-                        }
-                    }
-                }
-            ]
         if method == "getChat":
             assert int(payload["chat_id"]) == -1001234567890
             return {
@@ -753,6 +742,22 @@ def test_telegram_detect_connect_test_and_disconnect(client, monkeypatch):
         raise AssertionError(f"Método inesperado: {method}")
 
     monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+
+    # El único consumidor de getUpdates es el worker. Aquí simulamos que
+    # ya vio un mensaje del grupo antes de seleccionarlo.
+    app_module.process_telegram_update(
+        {
+            "update_id": 1,
+            "message": {
+                "chat": {
+                    "id": -1001234567890,
+                    "title": 'Casa "Familia"',
+                    "type": "supergroup",
+                },
+                "text": "/casa",
+            },
+        }
+    )
 
     detected = client.post("/api/telegram/chats")
     assert detected.status_code == 200
@@ -899,3 +904,245 @@ def test_editing_event_resets_telegram_delivery_state(client, monkeypatch):
             (event_id,),
         ).fetchone()[0]
     assert count == 0
+
+
+def test_telegram_commands_create_modify_and_undo_task(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    sent = []
+
+    def fake_telegram(method, payload=None):
+        if method == "sendMessage":
+            sent.append(dict(payload))
+            return {"message_id": len(sent)}
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+    chat_id = -100500600700
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", chat_id)
+        app_module.set_meta(conn, "telegram_chat_title", "Casa Tareas")
+
+    app_module.telegram_handle_command(
+        chat_id,
+        "/tarea Revisar contrato | Piso Fanalwegle | gestión",
+    )
+    state = get_state(client)
+    task = next(t for t in state["tasks"] if t["title"] == "Revisar contrato")
+    assert task["area"]["name"] == "Piso Fanalwegle"
+    assert task["task_type"] == "management"
+
+    app_module.telegram_handle_command(
+        chat_id,
+        "/renombrar Revisar contrato | Revisar contrato anual",
+    )
+    renamed = task_from_state(get_state(client), task["id"])
+    assert renamed["title"] == "Revisar contrato anual"
+
+    app_module.telegram_handle_command(
+        chat_id,
+        "/mover Revisar contrato anual | Krankenkassen",
+    )
+    moved = task_from_state(get_state(client), task["id"])
+    assert moved["area"]["name"] == "Krankenkassen"
+
+    tomorrow = (app_module.today_local() + timedelta(days=1)).isoformat()
+    app_module.telegram_handle_command(
+        chat_id,
+        "/posponer Revisar contrato anual | mañana",
+    )
+    postponed = task_from_state(get_state(client), task["id"])
+    assert postponed["next_due"] == tomorrow
+
+    # /deshacer revierte solo la última acción realizada desde Telegram.
+    app_module.telegram_handle_command(chat_id, "/deshacer")
+    restored = task_from_state(get_state(client), task["id"])
+    assert restored["next_due"] == app_module.today_local().isoformat()
+
+    assert any("Tarea creada" in m["text"] for m in sent)
+    assert any("Krankenkassen" in m["text"] for m in sent)
+    assert any("pospuesta" in m["text"] for m in sent)
+
+
+def test_telegram_hecha_callback_is_single_use(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    calls = []
+
+    def fake_telegram(method, payload=None):
+        calls.append((method, dict(payload or {})))
+        if method == "sendMessage":
+            return {"message_id": 321}
+        if method in {"answerCallbackQuery", "editMessageReplyMarkup"}:
+            return True
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+    chat_id = -100700800900
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", chat_id)
+        task = conn.execute(
+            "SELECT id,title FROM tasks WHERE title='Sacar basura' AND active=1"
+        ).fetchone()
+        person = conn.execute(
+            "SELECT id,name FROM people WHERE name='Jose' AND active=1"
+        ).fetchone()
+
+    app_module.telegram_handle_command(chat_id, "/hecha Sacar basura")
+    send_call = next(
+        payload for method, payload in calls
+        if method == "sendMessage" and "¿Quién hizo" in payload.get("text", "")
+    )
+    keyboard = json.loads(send_call["reply_markup"])
+    assert len(keyboard["inline_keyboard"][0]) == 3
+
+    with app_module.db() as conn:
+        pending = conn.execute(
+            """SELECT id FROM telegram_pending_actions
+               WHERE action_type='complete' AND used_at IS NULL
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+    callback_data = f"done:{pending['id']}:{person['id']}"
+    update = {
+        "update_id": 55,
+        "callback_query": {
+            "id": "cb-1",
+            "data": callback_data,
+            "message": {
+                "message_id": 321,
+                "chat": {"id": chat_id, "title": "Casa Tareas", "type": "supergroup"},
+            },
+        },
+    }
+
+    app_module.process_telegram_update(update)
+    after = get_state(client)
+    matches = [
+        h for h in after["history"]
+        if h["task_id"] == task["id"] and h["name"] == "Jose"
+    ]
+    assert len(matches) == 1
+
+    # Pulsar de nuevo el mismo botón no crea una segunda realización.
+    update["callback_query"]["id"] = "cb-2"
+    app_module.process_telegram_update(update)
+    again = get_state(client)
+    matches = [
+        h for h in again["history"]
+        if h["task_id"] == task["id"] and h["name"] == "Jose"
+    ]
+    assert len(matches) == 1
+
+
+def test_telegram_ignores_commands_from_unconfigured_chat(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setattr(
+        app_module,
+        "telegram_api_request",
+        lambda method, payload=None: {"message_id": 1},
+    )
+    allowed_chat = -100111000111
+    other_chat = -100222000222
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", allowed_chat)
+
+    app_module.process_telegram_update(
+        {
+            "update_id": 10,
+            "message": {
+                "chat": {"id": other_chat, "title": "Otro grupo", "type": "supergroup"},
+                "text": "/tarea No debe existir | Vehículos | gestión",
+            },
+        }
+    )
+    assert all(
+        t["title"] != "No debe existir"
+        for t in get_state(client)["tasks"]
+    )
+
+    with app_module.db() as conn:
+        seen = conn.execute(
+            "SELECT title FROM telegram_chats_seen WHERE chat_id=?",
+            (other_chat,),
+        ).fetchone()
+    assert seen["title"] == "Otro grupo"
+
+
+def test_telegram_update_offset_prevents_reprocessing(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    chat_id = -100333000333
+    requests = []
+    first = True
+
+    def fake_telegram(method, payload=None):
+        nonlocal first
+        payload = dict(payload or {})
+        requests.append((method, payload))
+        if method == "getUpdates":
+            if first:
+                first = False
+                return [
+                    {
+                        "update_id": 42,
+                        "message": {
+                            "chat": {
+                                "id": chat_id,
+                                "title": "Casa",
+                                "type": "supergroup",
+                            },
+                            "text": "/tarea Desde offset | Vehículos | gestión",
+                        },
+                    }
+                ]
+            return []
+        if method == "sendMessage":
+            return {"message_id": 1}
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", chat_id)
+
+    assert app_module.process_telegram_updates(timeout=0) == 1
+    assert app_module.process_telegram_updates(timeout=0) == 0
+
+    get_calls = [payload for method, payload in requests if method == "getUpdates"]
+    assert get_calls[0]["offset"] == 0
+    assert get_calls[1]["offset"] == 43
+    assert sum(
+        1 for t in get_state(client)["tasks"] if t["title"] == "Desde offset"
+    ) == 1
+
+
+def test_telegram_event_command_creates_area_event(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    sent = []
+    monkeypatch.setattr(
+        app_module,
+        "telegram_api_request",
+        lambda method, payload=None: (
+            sent.append(dict(payload or {})) or {"message_id": 1}
+        ),
+    )
+    chat_id = -100444000444
+    with app_module.db() as conn:
+        app_module.set_meta(conn, "telegram_chat_id", chat_id)
+
+    app_module.telegram_handle_command(
+        chat_id,
+        "/evento Reunión propietarios | 2030-11-12 19:00 | Piso Im Gapetsch | 1d,2h",
+    )
+
+    state = get_state(client)
+    event = next(e for e in state["events"] if e["title"] == "Reunión propietarios")
+    assert event["area"]["name"] == "Piso Im Gapetsch"
+    assert event["reminders"] == [1440, 120]
+    assert any("12.11.2030" in m.get("text", "") for m in sent)
