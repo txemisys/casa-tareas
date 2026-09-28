@@ -11,6 +11,8 @@ services:
       APP_TIMEZONE: "${APP_TIMEZONE:-Europe/Zurich}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_POLL_SECONDS: "${TELEGRAM_POLL_SECONDS:-60}"
+      ICAL_SYNC_MINUTES: "${ICAL_SYNC_MINUTES:-30}"
+      MAX_ATTACHMENT_BYTES: "${MAX_ATTACHMENT_BYTES:-20971520}"
     volumes:
       - ./data:/app/data
     healthcheck:
