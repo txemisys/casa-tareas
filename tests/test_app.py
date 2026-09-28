@@ -1755,3 +1755,304 @@ def test_reorder_today_ignores_hidden_paused_tasks(client):
             "SELECT position FROM today_queue WHERE task_id=?", (paused_task,)
         ).fetchone()
     assert hidden is not None
+
+
+def test_inventory_drives_shopping_and_task_supplies(client):
+    created_item = client.post(
+        "/api/inventory",
+        json={
+            "name": "Limpiador de baño",
+            "category": "Limpieza",
+            "area_id": None,
+            "unit": "botella",
+            "purchase_quantity": "1 botella",
+            "stock_status": "ok",
+            "shopping_requested": False,
+            "notes": "Sin perfume fuerte.",
+        },
+    )
+    assert created_item.status_code == 200
+    item_id = created_item.json()["id"]
+
+    task = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Limpiar baño",
+            supply_ids=[item_id],
+        ),
+    )
+    assert task.status_code == 200
+    task_id = task.json()["id"]
+
+    state = get_state(client)
+    linked = task_from_state(state, task_id)
+    assert [x["id"] for x in linked["supplies"]] == [item_id]
+    assert linked["missing_supplies"] == []
+    assert state["shopping_list"] == []
+
+    low = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "low", "shopping_requested": None},
+    )
+    assert low.status_code == 200
+    state = get_state(client)
+    shopping = next(x for x in state["shopping_list"] if x["id"] == item_id)
+    assert shopping["needs_purchase"] is True
+    assert shopping["stock_status"] == "low"
+    assert [t["title"] for t in shopping["required_by"]] == ["Limpiar baño"]
+    assert task_from_state(state, task_id)["missing_supplies"] == []
+
+    out = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "out", "shopping_requested": None},
+    )
+    assert out.status_code == 200
+    state = get_state(client)
+    assert [
+        x["name"] for x in task_from_state(state, task_id)["missing_supplies"]
+    ] == ["Limpiador de baño"]
+
+    blocked = client.delete(f"/api/inventory/{item_id}")
+    assert blocked.status_code == 409
+
+    replenished = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "ok", "shopping_requested": False},
+    )
+    assert replenished.status_code == 200
+    assert all(x["id"] != item_id for x in get_state(client)["shopping_list"])
+
+
+def test_inventory_manual_buy_request(client):
+    item = client.post(
+        "/api/inventory",
+        json={
+            "name": "Guantes",
+            "category": "Limpieza",
+            "area_id": None,
+            "unit": "caja",
+            "purchase_quantity": "1 caja",
+            "stock_status": "ok",
+            "shopping_requested": True,
+            "notes": "",
+        },
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+    assert any(x["id"] == item_id for x in get_state(client)["shopping_list"])
+
+    done = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "ok", "shopping_requested": False},
+    )
+    assert done.status_code == 200
+    assert all(x["id"] != item_id for x in get_state(client)["shopping_list"])
+
+
+def test_task_and_area_document_attachments(client):
+    state = get_state(client)
+    task_id = state["tasks"][0]["id"]
+    area = client.post(
+        "/api/areas",
+        json={
+            "name": "Área con documentos",
+            "description": "",
+            "color": "#e7eefb",
+            "icon": "📁",
+            "owner_person_id": None,
+        },
+    )
+    assert area.status_code == 200
+    area_id = area.json()["id"]
+
+    upload_task = client.post(
+        "/api/attachments",
+        data={"entity_type": "task", "entity_id": str(task_id)},
+        files={"file": ("manual.pdf", b"%PDF-test-content", "application/pdf")},
+    )
+    assert upload_task.status_code == 200
+    task_attachment_id = upload_task.json()["id"]
+
+    upload_area = client.post(
+        "/api/attachments",
+        data={"entity_type": "area", "entity_id": str(area_id)},
+        files={"file": ("contrato.txt", b"contrato", "text/plain")},
+    )
+    assert upload_area.status_code == 200
+    area_attachment_id = upload_area.json()["id"]
+
+    state = get_state(client)
+    task = task_from_state(state, task_id)
+    assert task["attachment_count"] == 1
+    assert task["attachments"][0]["original_name"] == "manual.pdf"
+    assert "stored_name" not in task["attachments"]
+
+    area_state = next(a for a in state["areas"] if a["id"] == area_id)
+    assert area_state["attachment_count"] == 1
+    assert area_state["attachments"][0]["original_name"] == "contrato.txt"
+
+    downloaded = client.get(f"/api/attachments/{task_attachment_id}/download")
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"%PDF-test-content"
+    assert "manual.pdf" in downloaded.headers["content-disposition"]
+
+    blocked = client.delete(f"/api/areas/{area_id}/hard")
+    assert blocked.status_code == 409
+    assert "1 documento(s)" in blocked.json()["detail"]
+
+    assert client.delete(f"/api/attachments/{area_attachment_id}").status_code == 200
+    assert client.delete(f"/api/areas/{area_id}/hard").status_code == 200
+
+    assert client.delete(f"/api/attachments/{task_attachment_id}").status_code == 200
+    assert task_from_state(get_state(client), task_id)["attachment_count"] == 0
+
+
+def test_activity_feed_records_household_changes(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(title="Actividad visible"),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    state = get_state(client)
+    person_id = state["people"][0]["id"]
+    completed = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    )
+    assert completed.status_code == 200
+
+    activity = get_state(client)["activity"]
+    summaries = [a["summary"] for a in activity]
+    assert any('Creada la tarea "Actividad visible"' in x for x in summaries)
+    assert any("completó" in x and "Actividad visible" in x for x in summaries)
+
+
+def test_ical_subscription_expands_recurring_events_and_hides_secret_url(
+    client, monkeypatch
+):
+    import app as app_module
+
+    tomorrow = app_module.today_local() + timedelta(days=1)
+    start = datetime.combine(tomorrow, datetime.min.time()).replace(hour=10)
+    end = start + timedelta(hours=1)
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//Casa Tareas Test//EN\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:reunion-test\r\n"
+        f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}Z\r\n"
+        f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}Z\r\n"
+        "RRULE:FREQ=DAILY;COUNT=2\r\n"
+        "SUMMARY:Reunión externa\r\n"
+        "LOCATION:Sala común\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    ).encode()
+
+    monkeypatch.setattr(
+        app_module,
+        "normalize_calendar_url",
+        lambda value: value.strip(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "fetch_calendar_bytes",
+        lambda url: ics,
+    )
+
+    created = client.post(
+        "/api/calendars",
+        json={
+            "name": "Comunidad",
+            "url": "https://calendar.example/secret-token/calendar.ics",
+            "area_id": None,
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["synced"] is True
+    assert created.json()["event_count"] == 2
+    subscription_id = created.json()["id"]
+
+    state = get_state(client)
+    subscription = next(
+        x for x in state["calendar_subscriptions"] if x["id"] == subscription_id
+    )
+    assert "url" not in subscription
+    assert subscription["url_display"] == "calendar.example"
+    assert "secret-token" not in str(subscription)
+
+    external = [
+        e for e in state["external_events"]
+        if e["subscription_id"] == subscription_id
+    ]
+    assert len(external) == 2
+    assert all(e["external"] is True for e in external)
+    assert external[0]["title"] == "Reunión externa"
+    assert external[0]["location"] == "Sala común"
+    assert any(
+        e["external"] and e["title"] == "Reunión externa"
+        for e in state["event_upcoming"]
+    )
+
+    deleted = client.delete(f"/api/calendars/{subscription_id}")
+    assert deleted.status_code == 200
+    after = get_state(client)
+    assert all(
+        e["subscription_id"] != subscription_id
+        for e in after["external_events"]
+    )
+
+
+def test_ical_sync_failure_keeps_last_valid_cache(client, monkeypatch):
+    import app as app_module
+
+    tomorrow = app_module.today_local() + timedelta(days=1)
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:cache-test\r\n"
+        f"DTSTART:{tomorrow.strftime('%Y%m%d')}\r\n"
+        "SUMMARY:Evento conservado\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    ).encode()
+
+    monkeypatch.setattr(app_module, "normalize_calendar_url", lambda value: value.strip())
+    monkeypatch.setattr(app_module, "fetch_calendar_bytes", lambda url: ics)
+
+    created = client.post(
+        "/api/calendars",
+        json={
+            "name": "Calendario cacheado",
+            "url": "https://calendar.example/cache.ics",
+            "area_id": None,
+        },
+    )
+    subscription_id = created.json()["id"]
+    before = [
+        e for e in get_state(client)["external_events"]
+        if e["subscription_id"] == subscription_id
+    ]
+    assert len(before) == 1
+
+    def fail_fetch(url):
+        raise RuntimeError("fallo de red")
+
+    monkeypatch.setattr(app_module, "fetch_calendar_bytes", fail_fetch)
+    failed = client.post(f"/api/calendars/{subscription_id}/sync")
+    assert failed.status_code == 502
+
+    state = get_state(client)
+    after = [
+        e for e in state["external_events"]
+        if e["subscription_id"] == subscription_id
+    ]
+    assert len(after) == 1
+    sub = next(
+        x for x in state["calendar_subscriptions"] if x["id"] == subscription_id
+    )
+    assert "fallo de red" in sub["last_error"]
