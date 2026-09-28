@@ -126,6 +126,23 @@ Los envíos realizados se registran en SQLite para evitar duplicados después de
 
 El token del bot nunca se devuelve a la interfaz ni se almacena en SQLite; solo se lee de la variable de entorno. En SQLite se guarda únicamente el identificador y el nombre del chat seleccionado.
 
+## Necesidad, sugerencias y duración
+
+Las tareas recurrentes calculan una **necesidad** entre 0 % y 100 % según cuánto ha avanzado su ciclo.
+
+- **Puede esperar**: menos del 40 %.
+- **Pronto**: del 40 % al 69 %.
+- **Conviene hacer**: del 70 % al 99 %.
+- **Pendiente**: 100 %.
+
+El porcentaje está limitado a 100 % para evitar indicadores alarmistas. Las tareas recurrentes con una necesidad del 70 % o más aparecen en **Sugeridas ahora**. Esta lista es informativa: una tarea no entra en **Hoy** hasta que alguien pulse **+ Hoy**.
+
+Las tareas puntuales no reciben un porcentaje artificial; siguen usando su fecha prevista.
+
+Cada tarea puede tener una **duración estimada**. La interfaz ofrece valores rápidos como 5, 10, 20 o 30 minutos y 1–2 horas. En **Sugeridas ahora** se puede filtrar por el tiempo disponible, por ejemplo **≤20 min**. Las tareas sin duración estimada siguen apareciendo en la vista completa, pero se excluyen cuando se aplica un filtro de tiempo porque no se puede garantizar que quepan en ese intervalo.
+
+Al completar una tarea de ciclo, su necesidad vuelve al principio del ciclo. Si se pospone una tarea, la necesidad se recalcula respecto a la nueva fecha.
+
 ## Pruebas automáticas
 
 El repositorio incluye pruebas de regresión para los flujos principales: cola Hoy, duplicados, reordenación, deshacer, finalización, recurrencias, personas y edición/archivado de tareas.
