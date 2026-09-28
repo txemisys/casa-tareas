@@ -1,0 +1,291 @@
+from datetime import date, datetime, timedelta
+
+
+def get_state(client):
+    response = client.get("/api/state")
+    assert response.status_code == 200
+    return response.json()
+
+
+def task_payload(**overrides):
+    data = {
+        "title": "Tarea de prueba",
+        "description": "Descripción",
+        "category": "Pruebas",
+        "color": "#dcecff",
+        "icon": "🧪",
+        "recurrence_type": "cycle",
+        "frequency_days": 7,
+        "initial_due_date": date.today().isoformat(),
+        "anchor_date": date.today().isoformat(),
+    }
+    data.update(overrides)
+    return data
+
+
+def task_from_state(state, task_id):
+    return next(task for task in state["tasks"] if task["id"] == task_id)
+
+
+def test_health(client):
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_add_one_task_to_today_is_idempotent_and_undoable(client):
+    initial = get_state(client)
+    assert initial["today"] == []
+
+    task_id = initial["upcoming"][0]["id"]
+
+    first = client.post(f"/api/today/{task_id}")
+    assert first.status_code == 200
+    first_data = first.json()
+    assert first_data["already_today"] is False
+    assert first_data["undo_id"] is not None
+
+    after_first = get_state(client)
+    assert [task["id"] for task in after_first["today"]] == [task_id]
+
+    second = client.post(f"/api/today/{task_id}")
+    assert second.status_code == 200
+    assert second.json()["already_today"] is True
+    assert second.json()["undo_id"] is None
+
+    after_second = get_state(client)
+    assert [task["id"] for task in after_second["today"]] == [task_id]
+
+    undo = client.post(f"/api/undo/{first_data['undo_id']}")
+    assert undo.status_code == 200
+    assert get_state(client)["today"] == []
+
+
+def test_reorder_today_and_undo(client):
+    initial = get_state(client)
+    first_id = initial["upcoming"][0]["id"]
+    second_id = initial["upcoming"][1]["id"]
+
+    assert client.post(f"/api/today/{first_id}").status_code == 200
+    assert client.post(f"/api/today/{second_id}").status_code == 200
+    assert [t["id"] for t in get_state(client)["today"]] == [first_id, second_id]
+
+    reordered = client.post(
+        "/api/today/reorder",
+        json={"task_ids": [second_id, first_id]},
+    )
+    assert reordered.status_code == 200
+    undo_id = reordered.json()["undo_id"]
+    assert undo_id is not None
+    assert [t["id"] for t in get_state(client)["today"]] == [second_id, first_id]
+
+    undo = client.post(f"/api/undo/{undo_id}")
+    assert undo.status_code == 200
+    assert [t["id"] for t in get_state(client)["today"]] == [first_id, second_id]
+
+
+def test_reorder_rejects_incomplete_or_duplicate_queue(client):
+    initial = get_state(client)
+    ids = [initial["upcoming"][0]["id"], initial["upcoming"][1]["id"]]
+    for task_id in ids:
+        assert client.post(f"/api/today/{task_id}").status_code == 200
+
+    missing = client.post("/api/today/reorder", json={"task_ids": [ids[0]]})
+    assert missing.status_code == 400
+
+    duplicate = client.post(
+        "/api/today/reorder",
+        json={"task_ids": [ids[0], ids[0]]},
+    )
+    assert duplicate.status_code == 400
+
+    assert [t["id"] for t in get_state(client)["today"]] == ids
+
+
+def test_cycle_completion_moves_next_due_and_undo_restores(client):
+    state = get_state(client)
+    task = next(t for t in state["tasks"] if t["active"] and t["recurrence_type"] == "cycle")
+    person = state["people"][0]
+
+    assert client.post(f"/api/today/{task['id']}").status_code == 200
+    completed = client.post(
+        f"/api/tasks/{task['id']}/complete",
+        json={"person_id": person["id"]},
+    )
+    assert completed.status_code == 200
+    undo_id = completed.json()["undo_id"]
+
+    after = get_state(client)
+    assert all(t["id"] != task["id"] for t in after["today"])
+    assert after["history"][0]["task_id"] == task["id"]
+    assert after["history"][0]["person_id"] == person["id"]
+
+    completed_day = datetime.fromisoformat(after["history"][0]["completed_at"]).date()
+    expected_due = completed_day + timedelta(days=task["frequency_days"])
+    updated = task_from_state(after, task["id"])
+    assert updated["next_due"] == expected_due.isoformat()
+
+    undo = client.post(f"/api/undo/{undo_id}")
+    assert undo.status_code == 200
+
+    restored = get_state(client)
+    assert restored["history"] == []
+    assert [t["id"] for t in restored["today"]] == [task["id"]]
+
+
+def test_fixed_schedule_is_not_shifted_by_early_completion(client):
+    anchor = date.today() + timedelta(days=10)
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Calendario fijo",
+            recurrence_type="fixed",
+            frequency_days=7,
+            initial_due_date=anchor.isoformat(),
+            anchor_date=anchor.isoformat(),
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    state = get_state(client)
+    person_id = state["people"][0]["id"]
+
+    assert client.post(f"/api/today/{task_id}").status_code == 200
+    completed = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    )
+    assert completed.status_code == 200
+
+    after = get_state(client)
+    task = task_from_state(after, task_id)
+    assert task["next_due"] == anchor.isoformat()
+
+
+def test_one_off_task_archives_on_completion_and_undo_reactivates(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Puntual",
+            recurrence_type="none",
+            frequency_days=None,
+        ),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    state = get_state(client)
+    person_id = state["people"][0]["id"]
+    assert client.post(f"/api/today/{task_id}").status_code == 200
+
+    completed = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    )
+    assert completed.status_code == 200
+
+    after = get_state(client)
+    assert task_from_state(after, task_id)["active"] is False
+
+    undo = client.post(f"/api/undo/{completed.json()['undo_id']}")
+    assert undo.status_code == 200
+    restored = get_state(client)
+    assert task_from_state(restored, task_id)["active"] is True
+    assert [t["id"] for t in restored["today"]] == [task_id]
+
+
+def test_people_create_edit_delete_restore_and_keep_history(client):
+    created = client.post(
+        "/api/people",
+        json={"name": "Alex", "color": "#abcdef", "icon": "🙂"},
+    )
+    assert created.status_code == 200
+    person_id = created.json()["id"]
+
+    updated = client.put(
+        f"/api/people/{person_id}",
+        json={"name": "Alexandra", "color": "#fedcba", "icon": "🧑"},
+    )
+    assert updated.status_code == 200
+
+    state = get_state(client)
+    person = next(p for p in state["people"] if p["id"] == person_id)
+    assert person["name"] == "Alexandra"
+    assert person["color"] == "#fedcba"
+
+    task_id = state["upcoming"][0]["id"]
+    assert client.post(f"/api/today/{task_id}").status_code == 200
+    completed = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"person_id": person_id},
+    )
+    assert completed.status_code == 200
+
+    deleted = client.delete(f"/api/people/{person_id}")
+    assert deleted.status_code == 200
+    delete_undo_id = deleted.json()["undo_id"]
+
+    after_delete = get_state(client)
+    assert all(p["id"] != person_id for p in after_delete["people"])
+    stored = next(p for p in after_delete["people_all"] if p["id"] == person_id)
+    assert stored["active"] == 0
+    assert any(
+        h["person_id"] == person_id and h["name"] == "Alexandra"
+        for h in after_delete["history"]
+    )
+
+    restore = client.post(f"/api/people/{person_id}/restore")
+    assert restore.status_code == 200
+    assert any(p["id"] == person_id for p in get_state(client)["people"])
+
+    # El deshacer de la eliminación también es seguro si la persona ya está activa.
+    # Primero deshacemos la restauración y luego la eliminación.
+    restore_undo_id = restore.json()["undo_id"]
+    assert client.post(f"/api/undo/{restore_undo_id}").status_code == 200
+    assert all(p["id"] != person_id for p in get_state(client)["people"])
+
+    assert client.post(f"/api/undo/{delete_undo_id}").status_code == 200
+    assert any(p["id"] == person_id for p in get_state(client)["people"])
+
+
+def test_cannot_delete_last_active_person(client):
+    state = get_state(client)
+    ids = [p["id"] for p in state["people"]]
+
+    assert client.delete(f"/api/people/{ids[0]}").status_code == 200
+    assert client.delete(f"/api/people/{ids[1]}").status_code == 200
+
+    response = client.delete(f"/api/people/{ids[2]}")
+    assert response.status_code == 400
+    assert len(get_state(client)["people"]) == 1
+
+
+def test_task_create_edit_archive_and_undo(client):
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(title="Crear editar archivar"),
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    edited_payload = task_payload(
+        title="Nombre editado",
+        description="Nueva descripción",
+        frequency_days=12,
+    )
+    edited = client.put(f"/api/tasks/{task_id}", json=edited_payload)
+    assert edited.status_code == 200
+
+    edited_task = task_from_state(get_state(client), task_id)
+    assert edited_task["title"] == "Nombre editado"
+    assert edited_task["description"] == "Nueva descripción"
+    assert edited_task["frequency_days"] == 12
+
+    archived = client.delete(f"/api/tasks/{task_id}")
+    assert archived.status_code == 200
+    assert task_from_state(get_state(client), task_id)["active"] is False
+
+    undo = client.post(f"/api/undo/{archived.json()['undo_id']}")
+    assert undo.status_code == 200
+    assert task_from_state(get_state(client), task_id)["active"] is True
