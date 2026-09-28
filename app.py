@@ -2023,99 +2023,116 @@ def add_today(task_id: int):
 
 
 
-@app.post("/api/tasks/{task_id}/postpone")
-def postpone(task_id: int, payload: PostponeIn):
+def postpone_task_action(conn, task_id, due_date_value):
     try:
-        date.fromisoformat(payload.due_date)
+        date.fromisoformat(due_date_value)
     except ValueError:
         raise HTTPException(400, "Fecha no válida")
 
-    with db() as conn:
-        task = task_row(conn, task_id)
-        queue = conn.execute(
-            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
-        ).fetchone()
-        previous_override = conn.execute(
-            """SELECT * FROM schedule_overrides
-               WHERE task_id=? AND consumed_at IS NULL
-               ORDER BY id DESC LIMIT 1""",
-            (task_id,),
-        ).fetchone()
+    task = task_row(conn, task_id)
+    if not task["active"]:
+        raise HTTPException(400, "La tarea está archivada")
+    queue = conn.execute(
+        "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
+    ).fetchone()
+    previous_override = conn.execute(
+        """SELECT * FROM schedule_overrides
+           WHERE task_id=? AND consumed_at IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (task_id,),
+    ).fetchone()
 
-        if previous_override:
-            conn.execute(
-                "UPDATE schedule_overrides SET consumed_at=? WHERE id=?",
-                (iso_now(), previous_override["id"]),
-            )
-        cur = conn.execute(
-            "INSERT INTO schedule_overrides(task_id,due_date,created_at) VALUES(?,?,?)",
-            (task_id, payload.due_date, iso_now()),
+    if previous_override:
+        conn.execute(
+            "UPDATE schedule_overrides SET consumed_at=? WHERE id=?",
+            (iso_now(), previous_override["id"]),
         )
-        conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
-        undo_id = record_undo(
-            conn,
-            "postpone",
-            {
-                "task_id": task_id,
-                "new_override_id": cur.lastrowid,
-                "previous_override_id": previous_override["id"]
-                if previous_override
-                else None,
-                "queue": queue_snapshot(queue),
-            },
-            f'Pospuesta "{task["title"]}"',
+    cur = conn.execute(
+        "INSERT INTO schedule_overrides(task_id,due_date,created_at) VALUES(?,?,?)",
+        (task_id, due_date_value, iso_now()),
+    )
+    conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
+    undo_id = record_undo(
+        conn,
+        "postpone",
+        {
+            "task_id": task_id,
+            "new_override_id": cur.lastrowid,
+            "previous_override_id": previous_override["id"]
+            if previous_override
+            else None,
+            "queue": queue_snapshot(queue),
+        },
+        f'Pospuesta "{task["title"]}"',
+    )
+    return {"ok": True, "undo_id": undo_id, "task_title": task["title"]}
+
+
+def complete_task_action(conn, task_id, person_id):
+    task = task_row(conn, task_id)
+    if not task["active"]:
+        raise HTTPException(400, "La tarea está archivada")
+    person = conn.execute(
+        "SELECT * FROM people WHERE id=? AND active=1", (person_id,)
+    ).fetchone()
+    if not person:
+        raise HTTPException(400, "Persona no válida")
+
+    queue = conn.execute(
+        "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
+    ).fetchone()
+    active_override = conn.execute(
+        """SELECT * FROM schedule_overrides
+           WHERE task_id=? AND consumed_at IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        (task_id,),
+    ).fetchone()
+
+    cur = conn.execute(
+        "INSERT INTO completions(task_id,person_id,completed_at) VALUES(?,?,?)",
+        (task_id, person_id, iso_now()),
+    )
+    if active_override:
+        conn.execute(
+            "UPDATE schedule_overrides SET consumed_at=? WHERE id=?",
+            (iso_now(), active_override["id"]),
         )
-        return {"ok": True, "undo_id": undo_id}
+    conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
+    if task["recurrence_type"] == "none":
+        conn.execute("UPDATE tasks SET active=0 WHERE id=?", (task_id,))
+
+    undo_id = record_undo(
+        conn,
+        "complete",
+        {
+            "task_id": task_id,
+            "completion_id": cur.lastrowid,
+            "previous_active": task["active"],
+            "active_override_id": active_override["id"]
+            if active_override
+            else None,
+            "queue": queue_snapshot(queue),
+        },
+        f'Completada "{task["title"]}" por {person["name"]}',
+    )
+    return {
+        "ok": True,
+        "undo_id": undo_id,
+        "task_title": task["title"],
+        "person_name": person["name"],
+    }
+
+
+@app.post("/api/tasks/{task_id}/postpone")
+def postpone(task_id: int, payload: PostponeIn):
+    with db() as conn:
+        return postpone_task_action(conn, task_id, payload.due_date)
 
 
 @app.post("/api/tasks/{task_id}/complete")
 def complete(task_id: int, payload: CompleteIn):
     with db() as conn:
-        task = task_row(conn, task_id)
-        person = conn.execute(
-            "SELECT * FROM people WHERE id=? AND active=1", (payload.person_id,)
-        ).fetchone()
-        if not person:
-            raise HTTPException(400, "Persona no válida")
-
-        queue = conn.execute(
-            "SELECT * FROM today_queue WHERE task_id=?", (task_id,)
-        ).fetchone()
-        active_override = conn.execute(
-            """SELECT * FROM schedule_overrides
-               WHERE task_id=? AND consumed_at IS NULL
-               ORDER BY id DESC LIMIT 1""",
-            (task_id,),
-        ).fetchone()
-
-        cur = conn.execute(
-            "INSERT INTO completions(task_id,person_id,completed_at) VALUES(?,?,?)",
-            (task_id, payload.person_id, iso_now()),
-        )
-        if active_override:
-            conn.execute(
-                "UPDATE schedule_overrides SET consumed_at=? WHERE id=?",
-                (iso_now(), active_override["id"]),
-            )
-        conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
-        if task["recurrence_type"] == "none":
-            conn.execute("UPDATE tasks SET active=0 WHERE id=?", (task_id,))
-
-        undo_id = record_undo(
-            conn,
-            "complete",
-            {
-                "task_id": task_id,
-                "completion_id": cur.lastrowid,
-                "previous_active": task["active"],
-                "active_override_id": active_override["id"]
-                if active_override
-                else None,
-                "queue": queue_snapshot(queue),
-            },
-            f'Completada "{task["title"]}" por {person["name"]}',
-        )
-        return {"ok": True, "undo_id": undo_id}
+        return complete_task_action(conn, task_id, payload.person_id)
 
 
 @app.post("/api/areas")
@@ -2406,6 +2423,27 @@ def undo(undo_id: int):
                 "UPDATE tasks SET area_id=? WHERE id=?",
                 (payload.get("previous_area_id"), payload["task_id"]),
             )
+
+        elif action == "rename_task":
+            conn.execute(
+                "UPDATE tasks SET title=? WHERE id=?",
+                (payload["previous_title"], payload["task_id"]),
+            )
+
+        elif action == "create_task":
+            completion_count = conn.execute(
+                "SELECT COUNT(*) FROM completions WHERE task_id=?",
+                (payload["task_id"],),
+            ).fetchone()[0]
+            if completion_count:
+                raise HTTPException(
+                    409,
+                    "No se puede deshacer la creación porque la tarea ya tiene historial",
+                )
+            conn.execute("DELETE FROM tasks WHERE id=?", (payload["task_id"],))
+
+        elif action == "create_event":
+            conn.execute("DELETE FROM events WHERE id=?", (payload["event_id"],))
 
         else:
             raise HTTPException(400, "Tipo de deshacer no soportado")
