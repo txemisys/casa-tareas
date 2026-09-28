@@ -126,6 +126,17 @@ Los envíos realizados se registran en SQLite para evitar duplicados después de
 
 El token del bot nunca se devuelve a la interfaz ni se almacena en SQLite; solo se lee de la variable de entorno. En SQLite se guarda únicamente el identificador y el nombre del chat seleccionado.
 
+## Corregir la cola de Hoy
+
+Añadir una tarea a **Hoy** no cambia su recurrencia ni su fecha: solo la coloca en una cola manual.
+
+Si se añadió por error, puede devolverse a **Próximamente** de dos formas:
+
+- En escritorio, arrastrando la tarjeta de **Hoy → Próximamente**.
+- En cualquier dispositivo, pulsando **← Quitar de Hoy**.
+
+La acción solo elimina la entrada de `today_queue`; no cambia `next_due`, recurrencia, necesidad ni historial. También genera una acción **Deshacer**, que restaura la tarea en la misma posición que tenía en Hoy.
+
 ## Necesidad, sugerencias y duración
 
 Las tareas recurrentes calculan una **necesidad** entre 0 % y 100 % según cuánto ha avanzado su ciclo.
