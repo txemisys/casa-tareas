@@ -40,7 +40,7 @@ ICAL_SYNC_MINUTES = max(5, int(os.getenv("ICAL_SYNC_MINUTES", "30") or "30"))
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.0.0")
+app = FastAPI(title="Casa Tareas", version="1.0.1")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -2615,7 +2615,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.0.0"}
+    return {"ok": True, "version": "1.0.1"}
 
 
 @app.get("/api/state")
@@ -3822,6 +3822,27 @@ def add_today(task_id: int):
         return {"ok": True, "undo_id": undo_id, "already_today": False}
 
 
+@app.delete("/api/today/{task_id}")
+def remove_today(task_id: int):
+    with db() as conn:
+        sync_pause_states(conn)
+        task = task_row(conn, task_id)
+        queue = conn.execute(
+            "SELECT * FROM today_queue WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if not queue:
+            return {"ok": True, "undo_id": None, "already_removed": True}
+
+        snapshot = queue_snapshot(queue)
+        conn.execute("DELETE FROM today_queue WHERE task_id=?", (task_id,))
+        undo_id = record_undo(
+            conn,
+            "remove_today",
+            {"task_id": task_id, "queue": snapshot},
+            f'Quitada de Hoy: "{task["title"]}"',
+        )
+        return {"ok": True, "undo_id": undo_id, "already_removed": False}
 
 
 def postpone_task_action(conn, task_id, due_date_value):
@@ -4229,6 +4250,9 @@ def undo(undo_id: int):
                 "DELETE FROM today_queue WHERE task_id=?",
                 (payload["task_id"],),
             )
+
+        elif action == "remove_today":
+            restore_queue_row(conn, payload.get("queue"))
 
         elif action == "reorder_today":
             if payload.get("old_positions"):
