@@ -2493,3 +2493,17 @@ def test_runtime_settings_reject_invalid_timezone(client):
         },
     )
     assert invalid.status_code == 400
+
+
+def test_frontend_uses_external_script_bundle(client):
+    root = client.get("/")
+    assert root.status_code == 200
+    assert root.headers["cache-control"] == "no-store"
+    assert '/static/app.js?v=1.1.2' in root.text
+    assert "Cargando Casa Tareas" in root.text
+    assert "<script>" not in root.text
+
+    bundle = client.get("/static/app.js?v=1.1.2")
+    assert bundle.status_code == 200
+    assert "async function load()" in bundle.text
+    assert 'api("/api/state")' in bundle.text
