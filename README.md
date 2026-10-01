@@ -400,3 +400,12 @@ Abre `http://localhost:8000`.
 ## Seguridad
 
 El MVP no tiene autenticación. Está pensado para una red doméstica o VPN privada. No lo expongas directamente a Internet sin autenticación y HTTPS.
+
+## Gastos de comida
+
+El repositorio incluye ahora el proyecto original de **Gastos de comida** en `gastos-comida/`, todavía como aplicación Flask independiente. Se ha importado el código para poder versionarlo, probarlo en CI y preparar una integración posterior con Casa Tareas.
+
+La base de datos real `gastos-comida/data/gastos.db` no se guarda en Git. El repositorio es público y ese archivo contiene el histórico de compras. Antes de cambiar la forma de desplegar Gastos de comida se debe conservar y copiar explícitamente esa base.
+
+Por ahora el `docker-compose.yml` raíz sigue levantando únicamente Casa Tareas; el `gastos-comida/compose.yml` importado se mantiene separado hasta que hagamos la migración de datos y la conexión entre ambos servicios.
+
