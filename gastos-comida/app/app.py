@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sqlite3
 from datetime import date, datetime
 
 from flask import Flask, redirect, render_template, request, url_for
@@ -12,11 +13,70 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INSTANCE_DIR = os.path.join(os.path.dirname(BASE_DIR), "data")
 os.makedirs(INSTANCE_DIR, exist_ok=True)
 
-app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+def env_flag(name, default=False):
+    value = (os.environ.get(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
+def sqlite_path_from_url(database_url):
+    prefix = "sqlite:///"
+    if not database_url.startswith(prefix):
+        return None
+    path = database_url[len(prefix) :]
+    if not path or path == ":memory:":
+        return None
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def assert_existing_database(database_url):
+    if not env_flag("GASTOS_REQUIRE_EXISTING_DB", False):
+        return
+    database_path = sqlite_path_from_url(database_url)
+    if not database_path:
+        raise RuntimeError(
+            "GASTOS_REQUIRE_EXISTING_DB=1 requiere una base SQLite en disco"
+        )
+    if not os.path.isfile(database_path) or os.path.getsize(database_path) == 0:
+        raise RuntimeError(
+            f"No existe una base de Gastos válida en {database_path}. "
+            "Se ha detenido el arranque para no crear una base vacía por accidente."
+        )
+    uri = f"file:{database_path}?mode=ro"
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    except sqlite3.Error as exc:
+        raise RuntimeError(
+            f"No se pudo validar la base existente de Gastos en {database_path}: {exc}"
+        ) from exc
+    finally:
+        try:
+            connection.close()
+        except (NameError, UnboundLocalError):
+            pass
+    missing = {"ticket", "ticket_item"} - tables
+    if missing:
+        raise RuntimeError(
+            "La base indicada no parece ser una base de Gastos de comida "
+            f"(faltan tablas: {', '.join(sorted(missing))})."
+        )
+
+
+DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     f"sqlite:///{os.path.join(INSTANCE_DIR, 'gastos.db')}",
 )
+assert_existing_database(DATABASE_URL)
+
+app = Flask(__name__)
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
