@@ -13,7 +13,7 @@ services:
       TELEGRAM_POLL_SECONDS: "${TELEGRAM_POLL_SECONDS:-60}"
       ICAL_SYNC_MINUTES: "${ICAL_SYNC_MINUTES:-30}"
       MAX_ATTACHMENT_BYTES: "${MAX_ATTACHMENT_BYTES:-20971520}"
-      GASTOS_COMIDA_URL: "${GASTOS_COMIDA_URL:-}"
+      GASTOS_COMIDA_URL: "${GASTOS_COMIDA_URL:-http://gastos-comida:8000}"
     volumes:
       - ./data:/app/data
     healthcheck:
@@ -22,6 +22,29 @@ services:
         - python
         - -c
         - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  gastos-comida:
+    build:
+      context: ./gastos-comida
+    container_name: gastos-comida
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${GASTOS_PORT:-8000}:8000"
+    environment:
+      GASTOS_REQUIRE_EXISTING_DB: "${GASTOS_REQUIRE_EXISTING_DB:-1}"
+    volumes:
+      - "${GASTOS_DATA_DIR:-./gastos-comida/data}:/app/data"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"
       interval: 30s
       timeout: 5s
       retries: 3
