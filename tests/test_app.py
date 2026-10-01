@@ -2499,7 +2499,7 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.1.2' in root.text
+    assert '/static/app.js?v=1.2.0' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
@@ -2507,3 +2507,78 @@ def test_frontend_uses_external_script_bundle(client):
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert 'api("/api/state")' in bundle.text
+
+
+def test_gastos_comida_integration_settings_and_connection(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000/"},
+    )
+    assert saved.status_code == 200
+    integration = saved.json()["integration"]
+    assert integration["configured"] is True
+    assert integration["url"] == "http://gastos-comida:8000"
+    assert integration["source"] == "application"
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "ok": True,
+                    "service": "gastos-comida",
+                    "api_version": "1",
+                    "products": 303,
+                    "tickets": 62,
+                    "items": 461,
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        assert request.full_url == "http://gastos-comida:8000/api/v1/health"
+        assert timeout == 5
+        return FakeResponse()
+
+    monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+
+    tested = client.post("/api/integrations/gastos-comida/test")
+    assert tested.status_code == 200
+    assert tested.json()["health"] == {
+        "api_version": "1",
+        "products": 303,
+        "tickets": 62,
+        "items": 461,
+    }
+
+    settings = client.get("/api/settings").json()
+    integration = settings["integrations"]["gastos_comida"]
+    assert integration["configured"] is True
+    assert integration["last_ok_at"] is not None
+    assert integration["last_error"] == ""
+
+
+def test_gastos_comida_integration_rejects_unsafe_base_url_shapes(client):
+    credentials = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://user:secret@gastos-comida:8000"},
+    )
+    assert credentials.status_code == 400
+
+    path = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000/api"},
+    )
+    assert path.status_code == 400
+
+    invalid_scheme = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "file:///tmp/gastos.db"},
+    )
+    assert invalid_scheme.status_code == 400
