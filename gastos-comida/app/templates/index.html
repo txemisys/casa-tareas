@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <header class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">Control doméstico</p>
+      <div class="hero-heading">
+        <h1>Gastos de comida</h1>
+        <p class="lead">Registra tickets completos, consulta gastos por artículo, usuario o supermercado y revisa la evolución mensual.</p>
+      </div>
+    </div>
+    <div class="stats-grid">
+      {% for metric in metric_cards %}
+      <article class="stat-card">
+        <span>{{ metric.label }}</span>
+        <div class="stat-body">
+          <strong>{{ "%.2f"|format(metric.value) }} €</strong>
+          <div class="stat-users">
+            {% for user_metric in metric.user_values %}
+            <div class="stat-user-row">
+              <span>{{ user_metric.user_name }}</span>
+              <span>{{ "%.2f"|format(user_metric.value) }} €</span>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <div class="section-title">
+        <h2>{% if selected_ticket %}Editar ticket{% else %}Nuevo ticket{% endif %}</h2>
+        <p>El total del ticket se recalcula automáticamente con el precio neto o con el descuento de cada línea.</p>
+      </div>
+      <form method="get" class="ticket-picker">
+        <label>
+          Seleccionar ticket por fecha e importe
+          <select name="edit_ticket" onchange="this.form.submit()">
+            <option value="">Crear ticket nuevo</option>
+            {% for ticket in all_tickets %}
+            <option value="{{ ticket.id }}" {% if selected_ticket and selected_ticket.id == ticket.id %}selected{% endif %}>
+              {{ ticket.purchase_date.strftime("%Y-%m-%d") }} · {{ "%.2f"|format(ticket.total) }} € · {{ ticket.supermarket }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+      <form action="{{ url_for('create_ticket') }}" method="post" id="ticket-form">
+        <input type="hidden" name="ticket_id" value="{{ selected_ticket.id if selected_ticket else '' }}">
+        <div class="form-grid">
+          <label>
+            Fecha
+            <input type="date" name="purchase_date" required value="{{ selected_ticket.purchase_date.strftime('%Y-%m-%d') if selected_ticket else '' }}">
+          </label>
+          <label>
+            Supermercado
+            <input
+              type="text"
+              class="suggestion-input"
+              name="supermarket"
+              list="supermarket-options"
+              placeholder="Mercadona, Lidl..."
+              required
+              value="{{ selected_ticket.supermarket if selected_ticket else '' }}">
+          </label>
+        </div>
+        <datalist id="supermarket-options">
+          {% for supermarket in supermarkets %}
+          <option value="{{ supermarket }}"></option>
+          {% endfor %}
+        </datalist>
+
+        <div class="items-table">
+          <div class="items-head">
+            <span>Artículo</span>
+            <span>Cantidad</span>
+            <span>PVP</span>
+            <span>Precio neto</span>
+            <span>Descuento</span>
+            <span>Descuento %</span>
+            <span>Total</span>
+            <span>Usuario</span>
+            <span></span>
+          </div>
+          <div id="items-container"></div>
+        </div>
+
+        <template id="item-row-template">
+          <div class="item-row">
+            <input type="text" class="suggestion-input" name="article[]" list="article-options" placeholder="Artículo" required>
+            <input type="number" name="quantity[]" min="0" step="1" value="1" required>
+            <input type="number" name="price[]" step="0.01" value="0" required>
+            <input type="number" name="net_price[]" step="0.01" placeholder="Precio final unidad">
+            <input type="number" name="discount[]" min="0" step="0.01" placeholder="Descuento unidad">
+            <input type="number" name="discount_percent[]" min="0" step="0.01" placeholder="% descuento">
+            <input type="number" name="line_total[]" step="0.01" value="0" readonly>
+            <input type="text" class="suggestion-input" name="user_name[]" list="user-options" placeholder="Usuario" required>
+            <button type="button" class="ghost danger remove-row">Quitar</button>
+          </div>
+        </template>
+
+        <datalist id="article-options">
+          {% for article in articles %}
+          <option value="{{ article }}"></option>
+          {% endfor %}
+        </datalist>
+
+        <datalist id="user-options">
+          {% for user in users %}
+          <option value="{{ user }}"></option>
+          {% endfor %}
+        </datalist>
+
+        {% if selected_ticket_payload %}
+        <script id="initial-ticket-data" type="application/json">{{ selected_ticket_payload|tojson }}</script>
+        {% endif %}
+
+        <div class="actions">
+          <button type="button" class="ghost" id="add-item">Añadir artículo</button>
+          <div class="ticket-total-box">
+            <span>Total ticket</span>
+            <strong id="ticket-total">0.00 €</strong>
+          </div>
+          {% if selected_ticket %}
+          <a class="ghost" href="{{ url_for('index') }}">Cancelar edición</a>
+          <button
+            type="submit"
+            class="ghost danger"
+            formaction="{{ url_for('delete_ticket', ticket_id=selected_ticket.id) }}"
+            formmethod="post">Eliminar ticket</button>
+          <button type="submit">Guardar cambios</button>
+          {% else %}
+          <button type="submit">Guardar ticket</button>
+          {% endif %}
+        </div>
+      </form>
+
+      <div class="lookup-tools">
+        <div class="section-title small">
+          <h3>Limpiar desplegables</h3>
+          <p>Oculta opciones erróneas sin borrar el histórico.</p>
+        </div>
+        <div class="lookup-grid">
+          <form action="{{ url_for('delete_lookup_option') }}" method="post" class="lookup-form">
+            <input type="hidden" name="category" value="article">
+            <label>
+              Quitar artículo guardado
+              <select name="value">
+                <option value="">Selecciona artículo</option>
+                {% for article in articles %}
+                <option value="{{ article }}">{{ article }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit" class="ghost danger">Quitar de listas</button>
+          </form>
+          <form action="{{ url_for('delete_lookup_option') }}" method="post" class="lookup-form">
+            <input type="hidden" name="category" value="user">
+            <label>
+              Quitar usuario guardado
+              <select name="value">
+                <option value="">Selecciona usuario</option>
+                {% for user in users %}
+                <option value="{{ user }}">{{ user }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit" class="ghost danger">Quitar de listas</button>
+          </form>
+          <form action="{{ url_for('delete_lookup_option') }}" method="post" class="lookup-form">
+            <input type="hidden" name="category" value="supermarket">
+            <label>
+              Quitar supermercado guardado
+              <select name="value">
+                <option value="">Selecciona supermercado</option>
+                {% for supermarket in supermarkets %}
+                <option value="{{ supermarket }}">{{ supermarket }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit" class="ghost danger">Quitar de listas</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title">
+        <h2>Consultas y filtros</h2>
+        <p>Los resultados se calculan sobre los tickets guardados.</p>
+      </div>
+      <form method="get" class="filters">
+        <div class="filter-grid">
+          <label>
+            Buscar por artículo
+            <select name="article">
+              <option value="">Todos</option>
+              {% for article in articles %}
+              <option value="{{ article }}" {% if article == filters.article %}selected{% endif %}>{{ article }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Fecha inicio
+            <input type="date" name="start_date" value="{{ filters.start_date }}">
+          </label>
+          <label>
+            Fecha fin
+            <input type="date" name="end_date" value="{{ filters.end_date }}">
+          </label>
+          <label>
+            Usuario
+            <select name="user">
+              <option value="">Todos</option>
+              {% for user in users %}
+              <option value="{{ user }}" {% if user == filters.user %}selected{% endif %}>{{ user }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Supermercado
+            <select name="supermarket">
+              <option value="">Todos</option>
+              {% for supermarket in supermarkets %}
+              <option value="{{ supermarket }}" {% if supermarket == filters.supermarket %}selected{% endif %}>{{ supermarket }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Año gráfica
+            <select name="chart_year">
+              {% for year in years %}
+              <option value="{{ year }}" {% if year == filters.chart_year %}selected{% endif %}>{{ year }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="actions">
+          <button type="submit">Aplicar filtros</button>
+          <a class="ghost" href="{{ url_for('index') }}">Limpiar</a>
+        </div>
+      </form>
+
+      <div class="result-grid">
+        <article class="result-card">
+          <h3>Total entre fechas</h3>
+          <strong>
+            {% if filters.totals_between_dates is not none %}
+              {{ "%.2f"|format(filters.totals_between_dates) }} €
+            {% else %}
+              Selecciona rango
+            {% endif %}
+          </strong>
+        </article>
+        <article class="result-card">
+          <h3>Total entre fechas por usuario</h3>
+          <strong>
+            {% if filters.totals_between_dates_by_user is not none %}
+              {{ "%.2f"|format(filters.totals_between_dates_by_user) }} €
+            {% else %}
+              Selecciona rango y usuario
+            {% endif %}
+          </strong>
+        </article>
+      </div>
+
+      <div class="table-block">
+        <h3>{{ filters.filtered_results_title }}</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Supermercado</th>
+              <th>Artículo</th>
+              <th>Cantidad</th>
+              <th>Total</th>
+              <th>Usuario</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in filters.filtered_results %}
+            <tr>
+              <td>{{ row[0].strftime("%Y-%m-%d") }}</td>
+              <td>{{ row[1] }}</td>
+              <td>{{ row[2] }}</td>
+              <td>{{ "%.2f"|format(row[3]) }}</td>
+              <td>{{ "%.2f"|format(row[4]) }} €</td>
+              <td>{{ row[5] }}</td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="6">
+                {% if filters.has_detail_filters %}
+                Sin resultados para los filtros seleccionados.
+                {% else %}
+                Selecciona algún filtro para ver el listado detallado.
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          {% if filters.filtered_results %}
+          <tfoot>
+            <tr>
+              <th colspan="4">Total</th>
+              <th>{{ "%.2f"|format(filters.filtered_results_total or 0) }} €</th>
+              <th></th>
+            </tr>
+          </tfoot>
+          {% endif %}
+        </table>
+      </div>
+    </section>
+
+    <section class="panel wide">
+      <div class="section-title">
+        <h2>Gráfica anual</h2>
+        <p>Gasto mensual del año seleccionado.</p>
+      </div>
+      <canvas
+        id="monthly-chart"
+        data-labels='{{ filters.chart_labels|tojson }}'
+        data-datasets='{{ filters.chart_datasets|tojson }}'></canvas>
+    </section>
+
+    <section class="panel wide">
+      <div class="section-title">
+        <h2>Últimos tickets</h2>
+        <p>Resumen rápido de las últimas compras registradas.</p>
+      </div>
+      <div class="ticket-list">
+        {% for ticket in recent_tickets %}
+        <article class="ticket-card">
+          <div class="ticket-top">
+            <div>
+              <strong>{{ ticket.supermarket }}</strong>
+              <span>{{ ticket.purchase_date.strftime("%Y-%m-%d") }}</span>
+            </div>
+            <div class="ticket-card-actions">
+              <strong>{{ "%.2f"|format(ticket.total) }} €</strong>
+              <form action="{{ url_for('delete_ticket', ticket_id=ticket.id) }}" method="post" class="inline-form">
+                <button type="submit" class="ghost danger compact">Eliminar</button>
+              </form>
+            </div>
+          </div>
+          <ul>
+            {% for item in ticket.items %}
+            <li>{{ item.article }} · {{ "%.2f"|format(item.quantity) }} · {{ item.user_name }} · {{ "%.2f"|format(item.total) }} €</li>
+            {% endfor %}
+          </ul>
+        </article>
+        {% else %}
+        <p>No hay tickets todavía.</p>
+        {% endfor %}
+      </div>
+    </section>
+  </main>
+</div>
+{% endblock %}
