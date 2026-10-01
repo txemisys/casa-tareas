@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 TEST_DATA = Path(__file__).parent / ".tmp-data"
 os.environ["APP_DATA_DIR"] = str(TEST_DATA)
 os.environ["APP_TIMEZONE"] = "UTC"
+os.environ["GASTOS_COMIDA_URL"] = ""
 
 import app as app_module  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
