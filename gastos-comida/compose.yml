@@ -1,0 +1,10 @@
+services:
+  gastos-comida:
+    build:
+      context: .
+      network: host
+    container_name: gastos-comida
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
