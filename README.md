@@ -403,9 +403,9 @@ El MVP no tiene autenticación. Está pensado para una red doméstica o VPN priv
 
 ## Gastos de comida
 
-El repositorio incluye ahora el proyecto original de **Gastos de comida** en `gastos-comida/`, todavía como aplicación Flask independiente. Se ha importado el código para poder versionarlo, probarlo en CI y preparar una integración posterior con Casa Tareas.
+El repositorio incluye **Gastos de comida** en `gastos-comida/` como servicio Flask independiente. Ya dispone de un catálogo estable de productos y una API v1 para que Casa Tareas pueda consultar productos, compras y gasto sin abrir directamente su SQLite.
 
-La base de datos real `gastos-comida/data/gastos.db` no se guarda en Git. El repositorio es público y ese archivo contiene el histórico de compras. Antes de cambiar la forma de desplegar Gastos de comida se debe conservar y copiar explícitamente esa base.
+Casa Tareas incluye en **⚙ Configuración → Gastos de comida** una URL de integración y un botón para probar `/api/v1/health`. La URL prevista cuando compartan red Docker es `http://gastos-comida:8000`.
 
-Por ahora el `docker-compose.yml` raíz sigue levantando únicamente Casa Tareas; el `gastos-comida/compose.yml` importado se mantiene separado hasta que hagamos la migración de datos y la conexión entre ambos servicios.
+La base real `gastos-comida/data/gastos.db` no se guarda en Git. El repositorio es público y ese archivo contiene el histórico de compras. Antes de cambiar el despliegue hay que conservar y copiar explícitamente esa base. El `docker-compose.yml` raíz todavía levanta únicamente Casa Tareas: la migración del contenedor de Gastos se hará por separado para no arrancar accidentalmente con una base vacía.
 
