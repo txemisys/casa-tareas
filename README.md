@@ -403,9 +403,22 @@ El MVP no tiene autenticación. Está pensado para una red doméstica o VPN priv
 
 ## Gastos de comida
 
-El repositorio incluye **Gastos de comida** en `gastos-comida/` como servicio Flask independiente. Ya dispone de un catálogo estable de productos y una API v1 para que Casa Tareas pueda consultar productos, compras y gasto sin abrir directamente su SQLite.
+El repositorio incluye **Gastos de comida** en `gastos-comida/` como servicio Flask independiente. Dispone de un catálogo estable de productos y una API v1 para que Casa Tareas consulte productos, compras y gasto sin abrir directamente su SQLite.
 
-Casa Tareas incluye en **⚙ Configuración → Gastos de comida** una URL de integración y un botón para probar `/api/v1/health`. La URL prevista cuando compartan red Docker es `http://gastos-comida:8000`.
+Casa Tareas incluye en **⚙ Configuración → Gastos de comida** una URL de integración y un botón para probar `/api/v1/health`. Cuando ambos contenedores compartan la red de Compose, la URL interna será `http://gastos-comida:8000`.
 
-La base real `gastos-comida/data/gastos.db` no se guarda en Git. El repositorio es público y ese archivo contiene el histórico de compras. Antes de cambiar el despliegue hay que conservar y copiar explícitamente esa base. El `docker-compose.yml` raíz todavía levanta únicamente Casa Tareas: la migración del contenedor de Gastos se hará por separado para no arrancar accidentalmente con una base vacía.
+El servicio está incluido en el `docker-compose.yml` principal bajo el perfil opcional `gastos`. Esto evita cambiar el despliegue existente antes de localizar la base real. La base `gastos-comida/data/gastos.db` no se guarda en Git porque el repositorio es público y contiene histórico doméstico.
+
+Para la migración única del servidor, primero se obtiene la carpeta del host que ya monta el contenedor actual. Después se configura el `.env` local:
+
+```text
+COMPOSE_PROFILES=gastos
+GASTOS_DATA_DIR=/ruta/real/de/la/carpeta/data
+GASTOS_COMIDA_URL=http://gastos-comida:8000
+GASTOS_REQUIRE_EXISTING_DB=1
+```
+
+Con `GASTOS_REQUIRE_EXISTING_DB=1`, Gastos se niega a arrancar si esa ruta no contiene una base SQLite existente con las tablas históricas esperadas. Así un error de ruta no crea silenciosamente una base nueva y vacía.
+
+El puerto web de Gastos sigue siendo configurable con `GASTOS_PORT` y usa `8000` por defecto.
 
