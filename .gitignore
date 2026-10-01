@@ -10,3 +10,6 @@ data/*
 tests/.tmp-data/
 .pytest_cache/
 .coverage
+
+gastos-comida/data/*
+!gastos-comida/data/.gitkeep
