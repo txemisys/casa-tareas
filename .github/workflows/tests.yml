@@ -37,5 +37,8 @@ jobs:
           APP_TIMEZONE: UTC
         run: pytest -q
 
-      - name: Build Docker image
+      - name: Build Casa Tareas Docker image
         run: docker build -t casa-tareas:test .
+
+      - name: Build Gastos de comida Docker image
+        run: docker build -t gastos-comida:test ./gastos-comida
