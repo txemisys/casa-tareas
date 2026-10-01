@@ -49,7 +49,7 @@ ICAL_SYNC_MINUTES = DEFAULT_ICAL_SYNC_MINUTES
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.2.0")
+app = FastAPI(title="Casa Tareas", version="1.2.1")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -1631,7 +1631,7 @@ def settings_json(conn):
         "SELECT COUNT(*) FROM attachments"
     ).fetchone()[0]
     return {
-        "version": "1.2.0",
+        "version": "1.2.1",
         "runtime": runtime_settings_json(),
         "telegram": telegram,
         "calendars": {
@@ -2927,7 +2927,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.2.0"}
+    return {"ok": True, "version": "1.2.1"}
 
 
 @app.get("/api/state")
