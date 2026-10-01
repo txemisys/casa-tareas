@@ -2499,7 +2499,7 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.2.0' in root.text
+    assert '/static/app.js?v=1.2.1' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
