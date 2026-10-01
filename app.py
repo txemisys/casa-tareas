@@ -40,6 +40,7 @@ DEFAULT_TELEGRAM_POLL_SECONDS = max(
 DEFAULT_ICAL_SYNC_MINUTES = max(
     5, int(os.getenv("ICAL_SYNC_MINUTES", "30") or "30")
 )
+DEFAULT_GASTOS_COMIDA_URL = os.getenv("GASTOS_COMIDA_URL", "").strip()
 MAX_ATTACHMENT_BYTES = DEFAULT_MAX_ATTACHMENT_BYTES
 TZ = ZoneInfo(DEFAULT_TIMEZONE_NAME)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -48,7 +49,7 @@ ICAL_SYNC_MINUTES = DEFAULT_ICAL_SYNC_MINUTES
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.1.2")
+app = FastAPI(title="Casa Tareas", version="1.2.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -1188,6 +1189,65 @@ def runtime_settings_json():
     }
 
 
+def normalize_gastos_comida_url(value):
+    url = (value or "").strip().rstrip("/")
+    if not url:
+        return ""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(400, "La URL de Gastos de comida debe empezar por http:// o https://")
+    if parsed.username or parsed.password:
+        raise HTTPException(400, "La URL de Gastos de comida no debe incluir credenciales")
+    if parsed.query or parsed.fragment:
+        raise HTTPException(400, "Usa solo la URL base de Gastos de comida, sin parámetros ni fragmentos")
+    path = (parsed.path or "").rstrip("/")
+    if path:
+        raise HTTPException(400, "Usa solo la URL base de Gastos de comida, sin una ruta adicional")
+    return url
+
+
+def gastos_comida_url(conn):
+    stored = (get_meta(conn, "gastos_comida_url", "") or "").strip()
+    return stored or DEFAULT_GASTOS_COMIDA_URL
+
+
+def gastos_comida_status(conn):
+    url = gastos_comida_url(conn)
+    return {
+        "configured": bool(url),
+        "url": url,
+        "source": "application" if (get_meta(conn, "gastos_comida_url", "") or "").strip() else (
+            "environment" if DEFAULT_GASTOS_COMIDA_URL else "none"
+        ),
+        "last_ok_at": get_meta(conn, "gastos_comida_last_ok_at"),
+        "last_error": get_meta(conn, "gastos_comida_last_error", ""),
+    }
+
+
+def gastos_comida_api_request(conn, path):
+    base = gastos_comida_url(conn)
+    if not base:
+        raise RuntimeError("Gastos de comida todavía no está configurado")
+    request = urllib.request.Request(
+        base + path,
+        headers={"Accept": "application/json", "User-Agent": "Casa-Tareas/1.2"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Gastos de comida devolvió HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"No se pudo contactar con Gastos de comida: {exc}") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Gastos de comida devolvió una respuesta no válida") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Gastos de comida devolvió un formato inesperado")
+    return data
+
+
 def telegram_bot_token(conn=None):
     environment_token = (TELEGRAM_BOT_TOKEN or "").strip()
     if environment_token:
@@ -1571,7 +1631,7 @@ def settings_json(conn):
         "SELECT COUNT(*) FROM attachments"
     ).fetchone()[0]
     return {
-        "version": "1.1.2",
+        "version": "1.2.0",
         "runtime": runtime_settings_json(),
         "telegram": telegram,
         "calendars": {
@@ -1582,6 +1642,9 @@ def settings_json(conn):
             "count": attachment_count,
             "max_bytes": MAX_ATTACHMENT_BYTES,
             "max_mb": round(MAX_ATTACHMENT_BYTES / (1024 * 1024)),
+        },
+        "integrations": {
+            "gastos_comida": gastos_comida_status(conn),
         },
         "data_path": "data/",
     }
@@ -2772,6 +2835,10 @@ class RuntimeSettingsIn(BaseModel):
     max_attachment_mb: int = Field(ge=1, le=500)
 
 
+class GastosIntegrationIn(BaseModel):
+    url: str = Field(default="", max_length=500)
+
+
 class InventoryItemIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     category: str = Field(default="General", max_length=80)
@@ -2860,7 +2927,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.1.2"}
+    return {"ok": True, "version": "1.2.0"}
 
 
 @app.get("/api/state")
@@ -3085,6 +3152,52 @@ def update_runtime_settings(payload: RuntimeSettingsIn):
             entity_type="settings",
         )
         return settings_json(conn)
+
+
+@app.put("/api/settings/gastos-comida")
+def save_gastos_comida_settings(payload: GastosIntegrationIn):
+    url = normalize_gastos_comida_url(payload.url)
+    with db() as conn:
+        if url:
+            set_meta(conn, "gastos_comida_url", url)
+        else:
+            delete_meta(conn, "gastos_comida_url")
+        delete_meta(conn, "gastos_comida_last_ok_at")
+        delete_meta(conn, "gastos_comida_last_error")
+        log_activity(
+            conn,
+            "integration_updated",
+            "Actualizada la integración con Gastos de comida",
+            entity_type="settings",
+        )
+        return {
+            "ok": True,
+            "integration": gastos_comida_status(conn),
+        }
+
+
+@app.post("/api/integrations/gastos-comida/test")
+def test_gastos_comida_connection():
+    with db() as conn:
+        try:
+            result = gastos_comida_api_request(conn, "/api/v1/health")
+            if result.get("ok") is not True or result.get("service") != "gastos-comida":
+                raise RuntimeError("La URL responde, pero no parece ser el servicio Gastos de comida")
+            set_meta(conn, "gastos_comida_last_ok_at", iso_now())
+            delete_meta(conn, "gastos_comida_last_error")
+            return {
+                "ok": True,
+                "health": {
+                    "api_version": result.get("api_version"),
+                    "products": int(result.get("products", 0) or 0),
+                    "tickets": int(result.get("tickets", 0) or 0),
+                    "items": int(result.get("items", 0) or 0),
+                },
+                "integration": gastos_comida_status(conn),
+            }
+        except RuntimeError as exc:
+            set_meta(conn, "gastos_comida_last_error", str(exc))
+            raise HTTPException(502, str(exc))
 
 
 @app.put("/api/settings/telegram-token")
