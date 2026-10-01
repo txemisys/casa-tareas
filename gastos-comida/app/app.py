@@ -36,9 +36,19 @@ class Ticket(db.Model):
     )
 
 
+class Product(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False, unique=True, index=True)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
 class TicketItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     ticket_id = db.Column(db.Integer, db.ForeignKey("ticket.id"), nullable=False, index=True)
+    product_id = db.Column(db.Integer, db.ForeignKey("product.id"), nullable=True, index=True)
+    product = db.relationship("Product", backref=db.backref("ticket_items", lazy=True))
     article = db.Column(db.String(200), nullable=False, index=True)
     quantity = db.Column(db.Float, nullable=False, default=1.0)
     price = db.Column(db.Float, nullable=False, default=0.0)
@@ -116,6 +126,50 @@ def normalize_article_name(value):
     return re.sub(r"\s+", " ", article).strip(" -")
 
 
+def find_or_create_product(article):
+    name = normalize_article_name(article)
+    if not name:
+        return None
+    product = Product.query.filter(func.lower(Product.name) == name.lower()).first()
+    if product is None:
+        product = Product(name=name, active=True, updated_at=datetime.utcnow())
+        db.session.add(product)
+        db.session.flush()
+    elif not product.active:
+        product.active = True
+        product.updated_at = datetime.utcnow()
+    return product
+
+
+def attach_products(items):
+    for item in items:
+        product = find_or_create_product(item.article)
+        if product is not None:
+            item.product = product
+            item.product_id = product.id
+
+
+def backfill_products():
+    changed = False
+    products_by_name = {product.name.casefold(): product for product in Product.query.all()}
+    for item in TicketItem.query.order_by(TicketItem.id.asc()).all():
+        name = normalize_article_name(item.article)
+        if not name:
+            continue
+        product = products_by_name.get(name.casefold())
+        if product is None:
+            product = Product(name=name, active=True, updated_at=datetime.utcnow())
+            db.session.add(product)
+            db.session.flush()
+            products_by_name[name.casefold()] = product
+            changed = True
+        if item.product_id != product.id:
+            item.product_id = product.id
+            changed = True
+    if changed:
+        db.session.commit()
+
+
 def compute_effective_unit_price(price, net_price=None, discount=0.0, discount_percent=0.0):
     if net_price is not None:
         return float(net_price)
@@ -147,6 +201,7 @@ def ticket_to_dict(ticket):
         "total": round(ticket.total, 2),
         "items": [
             {
+                "product_id": item.product_id,
                 "article": item.article,
                 "quantity": item.quantity,
                 "price": item.price,
@@ -441,6 +496,10 @@ def ensure_ticket_item_schema():
         with db.engine.begin() as connection:
             connection.execute(text("ALTER TABLE ticket_item ADD COLUMN discount_percent FLOAT DEFAULT 0"))
             connection.execute(text("UPDATE ticket_item SET discount_percent = 0 WHERE discount_percent IS NULL"))
+    if "product_id" not in columns:
+        with db.engine.begin() as connection:
+            connection.execute(text("ALTER TABLE ticket_item ADD COLUMN product_id INTEGER"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ticket_item_product_id ON ticket_item (product_id)"))
 
 
 def normalize_stored_items():
@@ -638,6 +697,7 @@ def create_ticket():
         return redirect(url_for("index"))
     items, ticket_total = parsed
 
+    attach_products(items)
     restore_hidden_lookup_values(supermarket, items)
     if ticket_id.isdigit():
         ticket = Ticket.query.get_or_404(int(ticket_id))
@@ -675,12 +735,181 @@ def delete_lookup_option():
     return redirect(url_for("index"))
 
 
+def json_response(payload, status=200):
+    return app.response_class(
+        response=json.dumps(payload, ensure_ascii=False),
+        status=status,
+        mimetype="application/json",
+    )
+
+
+def product_summary(product):
+    purchase_count = (
+        db.session.query(func.count(TicketItem.id))
+        .filter(TicketItem.product_id == product.id)
+        .scalar()
+        or 0
+    )
+    last_row = (
+        db.session.query(Ticket.purchase_date, Ticket.supermarket, TicketItem.total, TicketItem.quantity)
+        .join(TicketItem, Ticket.id == TicketItem.ticket_id)
+        .filter(TicketItem.product_id == product.id)
+        .order_by(Ticket.purchase_date.desc(), Ticket.id.desc(), TicketItem.id.desc())
+        .first()
+    )
+    last_purchase = None
+    if last_row:
+        last_purchase = {
+            "date": last_row[0].strftime("%Y-%m-%d"),
+            "supermarket": last_row[1],
+            "line_total": round(float(last_row[2] or 0.0), 2),
+            "quantity": float(last_row[3] or 0.0),
+        }
+    return {
+        "id": product.id,
+        "name": product.name,
+        "active": bool(product.active),
+        "purchase_count": int(purchase_count),
+        "last_purchase": last_purchase,
+    }
+
+
 @app.route("/api/tickets", methods=["GET"])
 def tickets_api():
     tickets = Ticket.query.order_by(Ticket.purchase_date.desc(), Ticket.id.desc()).all()
-    return app.response_class(
-        response=json.dumps([ticket_to_dict(ticket) for ticket in tickets], ensure_ascii=True),
-        mimetype="application/json",
+    return json_response([ticket_to_dict(ticket) for ticket in tickets])
+
+
+@app.route("/api/v1/health", methods=["GET"])
+def api_v1_health():
+    return json_response(
+        {
+            "ok": True,
+            "service": "gastos-comida",
+            "api_version": "1",
+            "products": Product.query.count(),
+            "tickets": Ticket.query.count(),
+            "items": TicketItem.query.count(),
+        }
+    )
+
+
+@app.route("/api/v1/products", methods=["GET"])
+def api_v1_products():
+    query = (request.args.get("q") or "").strip()
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", "100"))))
+    except ValueError:
+        limit = 100
+    products_query = Product.query.filter_by(active=True)
+    if query:
+        products_query = products_query.filter(Product.name.ilike(f"%{query}%"))
+    total = products_query.count()
+    products = products_query.order_by(Product.name.asc(), Product.id.asc()).limit(limit).all()
+    return json_response(
+        {
+            "items": [product_summary(product) for product in products],
+            "count": len(products),
+            "total": total,
+        }
+    )
+
+
+@app.route("/api/v1/products/<int:product_id>", methods=["GET"])
+def api_v1_product(product_id):
+    product = Product.query.get(product_id)
+    if product is None:
+        return json_response({"detail": "Producto no encontrado"}, 404)
+    return json_response(product_summary(product))
+
+
+@app.route("/api/v1/products/<int:product_id>/stats", methods=["GET"])
+def api_v1_product_stats(product_id):
+    product = Product.query.get(product_id)
+    if product is None:
+        return json_response({"detail": "Producto no encontrado"}, 404)
+    rows = (
+        db.session.query(
+            Ticket.purchase_date,
+            Ticket.supermarket,
+            TicketItem.quantity,
+            TicketItem.total,
+        )
+        .join(TicketItem, Ticket.id == TicketItem.ticket_id)
+        .filter(TicketItem.product_id == product.id)
+        .order_by(Ticket.purchase_date.desc(), Ticket.id.desc(), TicketItem.id.desc())
+        .all()
+    )
+    quantity_total = sum(float(row[2] or 0.0) for row in rows)
+    spend_total = sum(float(row[3] or 0.0) for row in rows)
+    latest = None
+    if rows:
+        latest = {
+            "date": rows[0][0].strftime("%Y-%m-%d"),
+            "supermarket": rows[0][1],
+            "quantity": float(rows[0][2] or 0.0),
+            "line_total": round(float(rows[0][3] or 0.0), 2),
+        }
+    return json_response(
+        {
+            "id": product.id,
+            "name": product.name,
+            "purchase_count": len(rows),
+            "quantity_total": round(quantity_total, 3),
+            "spend_total": round(spend_total, 2),
+            "average_line_total": round(spend_total / len(rows), 2) if rows else 0.0,
+            "last_purchase": latest,
+        }
+    )
+
+
+@app.route("/api/v1/spending/summary", methods=["GET"])
+def api_v1_spending_summary():
+    start = parse_date(request.args.get("from"))
+    end = parse_date(request.args.get("to"))
+    query = db.session.query(func.coalesce(func.sum(Ticket.total), 0.0))
+    if start:
+        query = query.filter(Ticket.purchase_date >= start)
+    if end:
+        query = query.filter(Ticket.purchase_date <= end)
+    total = float(query.scalar() or 0.0)
+    ticket_query = Ticket.query
+    if start:
+        ticket_query = ticket_query.filter(Ticket.purchase_date >= start)
+    if end:
+        ticket_query = ticket_query.filter(Ticket.purchase_date <= end)
+    return json_response(
+        {
+            "from": start.strftime("%Y-%m-%d") if start else None,
+            "to": end.strftime("%Y-%m-%d") if end else None,
+            "total": round(total, 2),
+            "ticket_count": ticket_query.count(),
+        }
+    )
+
+
+@app.route("/api/v1/purchases/recent", methods=["GET"])
+def api_v1_recent_purchases():
+    try:
+        after_ticket_id = max(0, int(request.args.get("after_ticket_id", "0")))
+    except ValueError:
+        after_ticket_id = 0
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", "50"))))
+    except ValueError:
+        limit = 50
+    tickets = (
+        Ticket.query.filter(Ticket.id > after_ticket_id)
+        .order_by(Ticket.id.asc())
+        .limit(limit)
+        .all()
+    )
+    return json_response(
+        {
+            "items": [ticket_to_dict(ticket) for ticket in tickets],
+            "count": len(tickets),
+            "last_ticket_id": tickets[-1].id if tickets else after_ticket_id,
+        }
     )
 
 
@@ -688,6 +917,7 @@ with app.app_context():
     db.create_all()
     ensure_ticket_item_schema()
     normalize_stored_items()
+    backfill_products()
     normalize_discount_values()
 
 
