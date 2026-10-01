@@ -2,9 +2,22 @@ services:
   gastos-comida:
     build:
       context: .
-      network: host
     container_name: gastos-comida
-    network_mode: host
-    volumes:
-      - ./data:/app/data
     restart: unless-stopped
+    init: true
+    ports:
+      - "${GASTOS_PORT:-8000}:8000"
+    environment:
+      GASTOS_REQUIRE_EXISTING_DB: "${GASTOS_REQUIRE_EXISTING_DB:-1}"
+    volumes:
+      - "${GASTOS_DATA_DIR:-./data}:/app/data"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
