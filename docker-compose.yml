@@ -13,7 +13,7 @@ services:
       TELEGRAM_POLL_SECONDS: "${TELEGRAM_POLL_SECONDS:-60}"
       ICAL_SYNC_MINUTES: "${ICAL_SYNC_MINUTES:-30}"
       MAX_ATTACHMENT_BYTES: "${MAX_ATTACHMENT_BYTES:-20971520}"
-      GASTOS_COMIDA_URL: "${GASTOS_COMIDA_URL:-http://gastos-comida:8000}"
+      GASTOS_COMIDA_URL: "${GASTOS_COMIDA_URL:-}"
     volumes:
       - ./data:/app/data
     healthcheck:
@@ -28,6 +28,7 @@ services:
       start_period: 10s
 
   gastos-comida:
+    profiles: ["gastos"]
     build:
       context: ./gastos-comida
     container_name: gastos-comida
