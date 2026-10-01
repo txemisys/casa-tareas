@@ -38,4 +38,17 @@ La carpeta conserva solamente `data/.gitkeep`. Para ejecutar esta copia con los 
 gastos-comida/data/gastos.db
 ```
 
-No borres la instalación actual ni muevas su base de datos hasta preparar la migración del contenedor. El archivo `compose.yml` incluido aquí sigue separado del `docker-compose.yml` principal hasta que hagamos esa migración de forma controlada.
+El servicio admite `GASTOS_REQUIRE_EXISTING_DB=1`. En ese modo comprueba antes de arrancar que el archivo SQLite existe y contiene las tablas históricas `ticket` y `ticket_item`; si no, aborta sin crear una base vacía.
+
+El `docker-compose.yml` principal de Casa Tareas ya incluye el servicio como perfil opcional `gastos`. No se activa hasta terminar la migración única del servidor. Para conservar el histórico sin copiarlo innecesariamente, `GASTOS_DATA_DIR` puede apuntar directamente a la carpeta del host que ya usa el contenedor actual.
+
+Una vez localizada esa carpeta, la configuración prevista es:
+
+```text
+COMPOSE_PROFILES=gastos
+GASTOS_DATA_DIR=/ruta/real/de/gastos/data
+GASTOS_COMIDA_URL=http://gastos-comida:8000
+GASTOS_REQUIRE_EXISTING_DB=1
+```
+
+No borres la instalación actual ni muevas su base de datos antes de comprobar su ruta real.
