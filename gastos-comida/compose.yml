@@ -2,6 +2,7 @@ services:
   gastos-comida:
     build:
       context: .
+      network: host
     container_name: gastos-comida
     restart: unless-stopped
     init: true
