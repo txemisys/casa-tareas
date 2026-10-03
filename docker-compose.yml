@@ -2,6 +2,7 @@ services:
   casa-tareas:
     build:
       context: .
+      network: host
     container_name: casa-tareas
     restart: unless-stopped
     init: true
@@ -31,6 +32,7 @@ services:
     profiles: ["gastos"]
     build:
       context: ./gastos-comida
+      network: host
     container_name: gastos-comida
     restart: unless-stopped
     init: true
