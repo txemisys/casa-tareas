@@ -52,3 +52,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+networks:
+  default:
+    name: casa-tareas_default
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
