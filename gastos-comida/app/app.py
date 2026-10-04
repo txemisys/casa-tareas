@@ -834,6 +834,231 @@ def product_summary(product):
     }
 
 
+
+def parse_ticket_json(payload):
+    if not isinstance(payload, dict):
+        return None, None, None, "El cuerpo debe ser un objeto JSON"
+
+    purchase_date = parse_date(payload.get("purchase_date") or payload.get("date"))
+    supermarket = str(payload.get("supermarket") or "").strip()
+    raw_items = payload.get("items")
+
+    if not purchase_date:
+        return None, None, None, "Fecha de compra no válida"
+    if not supermarket:
+        return None, None, None, "El supermercado es obligatorio"
+    if not isinstance(raw_items, list) or not raw_items:
+        return None, None, None, "El ticket debe contener al menos un artículo"
+
+    items = []
+    ticket_total = 0.0
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        article = normalize_article_name(raw.get("article"))
+        if not article:
+            continue
+        quantity = max(parse_float(raw.get("quantity"), 0.0), 0.0)
+        price = max(parse_float(raw.get("price"), 0.0), 0.0)
+        net_raw = raw.get("net_price")
+        net_price = None if net_raw in (None, "") else max(parse_float(net_raw, 0.0), 0.0)
+        discount = max(parse_float(raw.get("discount"), 0.0), 0.0)
+        discount_percent = max(parse_float(raw.get("discount_percent"), 0.0), 0.0)
+        user_name = normalize_user_name(raw.get("user_name")) or "Sin asignar"
+        effective_unit_price = compute_effective_unit_price(
+            price,
+            net_price=net_price,
+            discount=discount,
+            discount_percent=discount_percent,
+        )
+        line_total = round(quantity * effective_unit_price, 2)
+        ticket_total += line_total
+        items.append(
+            TicketItem(
+                article=article,
+                quantity=quantity,
+                price=price,
+                net_price=net_price,
+                discount=discount,
+                discount_percent=discount_percent,
+                total=line_total,
+                user_name=user_name,
+            )
+        )
+
+    if not items:
+        return None, None, None, "El ticket debe contener al menos un artículo válido"
+    return purchase_date, supermarket, (items, round(ticket_total, 2)), None
+
+
+def save_ticket_json(payload, ticket=None):
+    purchase_date, supermarket, parsed, error = parse_ticket_json(payload)
+    if error:
+        return None, error
+    items, ticket_total = parsed
+    attach_products(items)
+    restore_hidden_lookup_values(supermarket, items)
+    if ticket is None:
+        ticket = Ticket(
+            purchase_date=purchase_date,
+            supermarket=supermarket,
+            total=ticket_total,
+            items=items,
+        )
+        db.session.add(ticket)
+    else:
+        ticket.purchase_date = purchase_date
+        ticket.supermarket = supermarket
+        ticket.total = ticket_total
+        ticket.items.clear()
+        for item in items:
+            ticket.items.append(item)
+    db.session.commit()
+    return ticket, None
+
+
+def filters_to_json(filters):
+    return {
+        "article": filters["article"],
+        "user": filters["user"],
+        "supermarket": filters["supermarket"],
+        "start_date": filters["start_date"],
+        "end_date": filters["end_date"],
+        "has_selected_period": filters["has_selected_period"],
+        "chart_year": filters["chart_year"],
+        "filtered_results_title": filters["filtered_results_title"],
+        "filtered_results_total": filters["filtered_results_total"],
+        "has_detail_filters": filters["has_detail_filters"],
+        "totals_between_dates": filters["totals_between_dates"],
+        "totals_between_dates_by_user": filters["totals_between_dates_by_user"],
+        "chart_labels": filters["chart_labels"],
+        "chart_datasets": filters["chart_datasets"],
+        "filtered_results": [
+            {
+                "date": row[0].strftime("%Y-%m-%d"),
+                "supermarket": row[1],
+                "article": row[2],
+                "quantity": float(row[3] or 0.0),
+                "total": round(float(row[4] or 0.0), 2),
+                "user_name": row[5],
+            }
+            for row in filters["filtered_results"]
+        ],
+    }
+
+
+@app.route("/api/v1/dashboard", methods=["GET"])
+def api_v1_dashboard():
+    filters = collect_filters()
+    articles, users, supermarkets = build_lookup_values()
+    if filters["has_selected_period"]:
+        recent_tickets = (
+            Ticket.query.filter(
+                Ticket.purchase_date >= filters["start_date_obj"],
+                Ticket.purchase_date <= filters["end_date_obj"],
+            )
+            .order_by(Ticket.purchase_date.desc(), Ticket.id.desc())
+            .limit(50)
+            .all()
+        )
+    else:
+        recent_tickets = (
+            Ticket.query.order_by(Ticket.purchase_date.desc(), Ticket.id.desc())
+            .limit(10)
+            .all()
+        )
+    years = [
+        int(year)
+        for (year,) in db.session.query(extract("year", Ticket.purchase_date))
+        .distinct()
+        .order_by(extract("year", Ticket.purchase_date).desc())
+    ]
+    current_year = date.today().year
+    if current_year not in years:
+        years.insert(0, current_year)
+    return json_response(
+        {
+            "metrics": build_metrics(),
+            "filters": filters_to_json(filters),
+            "lookups": {
+                "articles": articles,
+                "users": users,
+                "supermarkets": supermarkets,
+            },
+            "years": years,
+            "recent_tickets": [ticket_to_dict(ticket) for ticket in recent_tickets],
+            "counts": {
+                "products": Product.query.count(),
+                "tickets": Ticket.query.count(),
+                "items": TicketItem.query.count(),
+            },
+        }
+    )
+
+
+@app.route("/api/v1/tickets", methods=["GET", "POST"])
+def api_v1_tickets():
+    if request.method == "POST":
+        ticket, error = save_ticket_json(request.get_json(silent=True))
+        if error:
+            return json_response({"detail": error}, 400)
+        return json_response({"ok": True, "ticket": ticket_to_dict(ticket)}, 201)
+
+    try:
+        limit = max(1, min(1000, int(request.args.get("limit", "200"))))
+    except ValueError:
+        limit = 200
+    tickets = (
+        Ticket.query.order_by(Ticket.purchase_date.desc(), Ticket.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return json_response(
+        {"items": [ticket_to_dict(ticket) for ticket in tickets], "count": len(tickets)}
+    )
+
+
+@app.route("/api/v1/tickets/<int:ticket_id>", methods=["GET", "PUT", "DELETE"])
+def api_v1_ticket(ticket_id):
+    ticket = Ticket.query.get(ticket_id)
+    if ticket is None:
+        return json_response({"detail": "Ticket no encontrado"}, 404)
+    if request.method == "GET":
+        return json_response(ticket_to_dict(ticket))
+    if request.method == "DELETE":
+        db.session.delete(ticket)
+        db.session.commit()
+        return json_response({"ok": True, "deleted_ticket_id": ticket_id})
+
+    ticket, error = save_ticket_json(request.get_json(silent=True), ticket=ticket)
+    if error:
+        return json_response({"detail": error}, 400)
+    return json_response({"ok": True, "ticket": ticket_to_dict(ticket)})
+
+
+@app.route("/api/v1/lookups", methods=["GET"])
+def api_v1_lookups():
+    articles, users, supermarkets = build_lookup_values()
+    return json_response(
+        {"articles": articles, "users": users, "supermarkets": supermarkets}
+    )
+
+
+@app.route("/api/v1/lookups/<category>", methods=["DELETE"])
+def api_v1_delete_lookup(category):
+    valid_categories = {"article", "user", "supermarket"}
+    value = (request.args.get("value") or "").strip()
+    if category not in valid_categories:
+        return json_response({"detail": "Categoría de lista no válida"}, 400)
+    if not value:
+        return json_response({"detail": "Indica el valor que quieres ocultar"}, 400)
+    exists = LookupExclusion.query.filter_by(category=category, value=value).first()
+    if not exists:
+        db.session.add(LookupExclusion(category=category, value=value))
+        db.session.commit()
+    return json_response({"ok": True, "category": category, "value": value})
+
+
 @app.route("/api/tickets", methods=["GET"])
 def tickets_api():
     tickets = Ticket.query.order_by(Ticket.purchase_date.desc(), Ticket.id.desc()).all()
