@@ -207,3 +207,98 @@ def test_protected_mode_migrates_existing_legacy_database_without_losing_rows(tm
         item = module.TicketItem.query.one()
         assert item.product_id is not None
         assert item.product.name == "Leche"
+
+
+def test_json_ticket_crud_dashboard_and_lookup_api(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    payload = {
+        "purchase_date": "2026-10-04",
+        "supermarket": "Coop",
+        "items": [
+            {
+                "article": "Yogur 500 g",
+                "quantity": 2,
+                "price": 2.0,
+                "net_price": "",
+                "discount": 0.25,
+                "discount_percent": "",
+                "user_name": "Jose",
+            },
+            {
+                "article": "Pan",
+                "quantity": 1,
+                "price": 3.0,
+                "net_price": 2.5,
+                "discount": "",
+                "discount_percent": "",
+                "user_name": "Cosi",
+            },
+        ],
+    }
+
+    created = client.post("/api/v1/tickets", json=payload)
+    assert created.status_code == 201
+    ticket = created.json["ticket"]
+    assert ticket["supermarket"] == "Coop"
+    assert ticket["total"] == 6.0
+    ticket_id = ticket["id"]
+
+    fetched = client.get(f"/api/v1/tickets/{ticket_id}")
+    assert fetched.status_code == 200
+    assert len(fetched.json["items"]) == 2
+
+    dashboard = client.get("/api/v1/dashboard?user=Jose&chart_year=2026")
+    assert dashboard.status_code == 200
+    body = dashboard.json
+    assert len(body["metrics"]) == 6
+    assert body["counts"]["tickets"] == 1
+    assert body["filters"]["user"] == "Jose"
+    assert body["filters"]["filtered_results_total"] == 3.5
+    assert "Yogur" in body["lookups"]["articles"]
+    assert len(body["filters"]["chart_labels"]) == 12
+
+    updated_payload = {
+        **payload,
+        "supermarket": "Migros",
+        "items": [
+            {
+                "article": "Pan",
+                "quantity": 2,
+                "price": 3.0,
+                "net_price": "",
+                "discount": "",
+                "discount_percent": 10,
+                "user_name": "Cosi",
+            }
+        ],
+    }
+    updated = client.put(f"/api/v1/tickets/{ticket_id}", json=updated_payload)
+    assert updated.status_code == 200
+    assert updated.json["ticket"]["supermarket"] == "Migros"
+    assert updated.json["ticket"]["total"] == 5.4
+
+    lookups = client.get("/api/v1/lookups")
+    assert lookups.status_code == 200
+    assert "Migros" in lookups.json["supermarkets"]
+
+    hidden = client.delete("/api/v1/lookups/supermarket?value=Migros")
+    assert hidden.status_code == 200
+    assert "Migros" not in client.get("/api/v1/lookups").json["supermarkets"]
+
+    deleted = client.delete(f"/api/v1/tickets/{ticket_id}")
+    assert deleted.status_code == 200
+    assert client.get(f"/api/v1/tickets/{ticket_id}").status_code == 404
+
+
+def test_json_ticket_api_rejects_invalid_payload(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    response = client.post(
+        "/api/v1/tickets",
+        json={"purchase_date": "bad", "supermarket": "", "items": []},
+    )
+    assert response.status_code == 400
+    assert "Fecha" in response.json["detail"]
