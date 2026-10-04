@@ -2499,11 +2499,13 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.2.1' in root.text
+    assert '/static/app.js?v=1.3.0' in root.text
+    assert '/static/gastos.js?v=1.3.0' in root.text
+    assert '/static/gastos.css?v=1.3.0' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.1.2")
+    bundle = client.get("/static/app.js?v=1.3.0")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert 'api("/api/state")' in bundle.text
@@ -2582,3 +2584,76 @@ def test_gastos_comida_integration_rejects_unsafe_base_url_shapes(client):
         json={"url": "file:///tmp/gastos.db"},
     )
     assert invalid_scheme.status_code == 400
+
+
+def test_gastos_proxy_dashboard_and_ticket_write(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000"},
+    )
+    assert saved.status_code == 200
+
+    seen = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        seen.append((request.full_url, request.get_method(), request.data, timeout))
+        if request.full_url.startswith("http://gastos-comida:8000/api/v1/dashboard"):
+            return FakeResponse(
+                {
+                    "metrics": [],
+                    "filters": {"chart_year": 2026},
+                    "lookups": {"articles": [], "users": [], "supermarkets": []},
+                    "years": [2026],
+                    "recent_tickets": [],
+                    "counts": {"products": 3, "tickets": 2, "items": 4},
+                }
+            )
+        if request.full_url == "http://gastos-comida:8000/api/v1/tickets":
+            assert request.get_method() == "POST"
+            body = json.loads(request.data.decode("utf-8"))
+            assert body["supermarket"] == "Coop"
+            return FakeResponse({"ok": True, "ticket": {"id": 9, **body, "date": body["purchase_date"], "total": 1.5}})
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+
+    dashboard = client.get("/api/gastos/dashboard?chart_year=2026")
+    assert dashboard.status_code == 200
+    assert dashboard.json()["counts"]["tickets"] == 2
+
+    created = client.post(
+        "/api/gastos/tickets",
+        json={
+            "purchase_date": "2026-10-04",
+            "supermarket": "Coop",
+            "items": [
+                {
+                    "article": "Pan",
+                    "quantity": 1,
+                    "price": 1.5,
+                    "net_price": "",
+                    "discount": "",
+                    "discount_percent": "",
+                    "user_name": "Jose",
+                }
+            ],
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["ticket"]["id"] == 9
+    assert any(method == "POST" for _url, method, _data, _timeout in seen)
