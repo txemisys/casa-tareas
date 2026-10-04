@@ -1240,7 +1240,7 @@ def gastos_comida_api_request(conn, path, method="GET", payload=None):
         method=method,
     )
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = ""
