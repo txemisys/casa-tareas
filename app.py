@@ -49,7 +49,7 @@ ICAL_SYNC_MINUTES = DEFAULT_ICAL_SYNC_MINUTES
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.2.1")
+app = FastAPI(title="Casa Tareas", version="1.3.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -1224,26 +1224,40 @@ def gastos_comida_status(conn):
     }
 
 
-def gastos_comida_api_request(conn, path):
+def gastos_comida_api_request(conn, path, method="GET", payload=None):
     base = gastos_comida_url(conn)
     if not base:
         raise RuntimeError("Gastos de comida todavía no está configurado")
+    body = None
+    headers = {"Accept": "application/json", "User-Agent": "Casa-Tareas/1.3"}
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
     request = urllib.request.Request(
         base + path,
-        headers={"Accept": "application/json", "User-Agent": "Casa-Tareas/1.2"},
+        data=body,
+        headers=headers,
+        method=method,
     )
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=8) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Gastos de comida devolvió HTTP {exc.code}") from exc
+        detail = ""
+        try:
+            payload_error = json.loads(exc.read().decode("utf-8"))
+            detail = payload_error.get("detail", "") if isinstance(payload_error, dict) else ""
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            detail = ""
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Gastos de comida devolvió HTTP {exc.code}{suffix}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise RuntimeError(f"No se pudo contactar con Gastos de comida: {exc}") from exc
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError("Gastos de comida devolvió una respuesta no válida") from exc
-    if not isinstance(data, dict):
+    if not isinstance(data, (dict, list)):
         raise RuntimeError("Gastos de comida devolvió un formato inesperado")
     return data
 
@@ -3198,6 +3212,100 @@ def test_gastos_comida_connection():
         except RuntimeError as exc:
             set_meta(conn, "gastos_comida_last_error", str(exc))
             raise HTTPException(502, str(exc))
+
+
+
+def gastos_proxy_call(path, method="GET", payload=None):
+    with db() as conn:
+        try:
+            result = gastos_comida_api_request(conn, path, method=method, payload=payload)
+            set_meta(conn, "gastos_comida_last_ok_at", iso_now())
+            delete_meta(conn, "gastos_comida_last_error")
+            return result
+        except RuntimeError as exc:
+            set_meta(conn, "gastos_comida_last_error", str(exc))
+            raise HTTPException(502, str(exc))
+
+
+@app.get("/api/gastos/dashboard")
+def gastos_dashboard(
+    article: str = "",
+    user: str = "",
+    supermarket: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    chart_year: int | None = None,
+):
+    params = {}
+    if article:
+        params["article"] = article
+    if user:
+        params["user"] = user
+    if supermarket:
+        params["supermarket"] = supermarket
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if chart_year is not None:
+        params["chart_year"] = str(chart_year)
+    query = urllib.parse.urlencode(params)
+    return gastos_proxy_call("/api/v1/dashboard" + (f"?{query}" if query else ""))
+
+
+@app.get("/api/gastos/tickets")
+def gastos_tickets(limit: int = 200):
+    limit = max(1, min(1000, limit))
+    return gastos_proxy_call(f"/api/v1/tickets?limit={limit}")
+
+
+@app.get("/api/gastos/tickets/{ticket_id}")
+def gastos_ticket(ticket_id: int):
+    return gastos_proxy_call(f"/api/v1/tickets/{ticket_id}")
+
+
+@app.post("/api/gastos/tickets")
+def gastos_create_ticket(payload: dict):
+    return gastos_proxy_call("/api/v1/tickets", method="POST", payload=payload)
+
+
+@app.put("/api/gastos/tickets/{ticket_id}")
+def gastos_update_ticket(ticket_id: int, payload: dict):
+    return gastos_proxy_call(f"/api/v1/tickets/{ticket_id}", method="PUT", payload=payload)
+
+
+@app.delete("/api/gastos/tickets/{ticket_id}")
+def gastos_delete_ticket(ticket_id: int):
+    return gastos_proxy_call(f"/api/v1/tickets/{ticket_id}", method="DELETE")
+
+
+@app.get("/api/gastos/products")
+def gastos_products(q: str = "", limit: int = 100):
+    params = {"limit": max(1, min(500, limit))}
+    if q:
+        params["q"] = q
+    return gastos_proxy_call("/api/v1/products?" + urllib.parse.urlencode(params))
+
+
+@app.get("/api/gastos/products/{product_id}")
+def gastos_product(product_id: int):
+    return gastos_proxy_call(f"/api/v1/products/{product_id}")
+
+
+@app.get("/api/gastos/products/{product_id}/stats")
+def gastos_product_stats(product_id: int):
+    return gastos_proxy_call(f"/api/v1/products/{product_id}/stats")
+
+
+@app.get("/api/gastos/lookups")
+def gastos_lookups():
+    return gastos_proxy_call("/api/v1/lookups")
+
+
+@app.delete("/api/gastos/lookups/{category}")
+def gastos_delete_lookup(category: str, value: str):
+    query = urllib.parse.urlencode({"value": value})
+    return gastos_proxy_call(f"/api/v1/lookups/{urllib.parse.quote(category)}?{query}", method="DELETE")
 
 
 @app.put("/api/settings/telegram-token")
