@@ -2657,3 +2657,129 @@ def test_gastos_proxy_dashboard_and_ticket_write(client, monkeypatch):
     assert created.status_code == 200
     assert created.json()["ticket"]["id"] == 9
     assert any(method == "POST" for _url, method, _data, _timeout in seen)
+
+
+def test_gastos_purchase_restock_linked_inventory_item(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000"},
+    )
+    assert saved.status_code == 200
+
+    created_inventory = client.post(
+        "/api/inventory",
+        json={
+            "name": "Pan",
+            "category": "Alimentación",
+            "area_id": None,
+            "unit": "paquete",
+            "purchase_quantity": "1 paquete",
+            "stock_status": "out",
+            "shopping_requested": True,
+            "notes": "",
+            "gastos_product_id": 77,
+        },
+    )
+    assert created_inventory.status_code == 200
+    inventory_id = created_inventory.json()["id"]
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        assert request.full_url == "http://gastos-comida:8000/api/v1/tickets"
+        assert request.get_method() == "POST"
+        return FakeResponse(
+            {
+                "ok": True,
+                "ticket": {
+                    "id": 101,
+                    "date": "2026-10-05",
+                    "supermarket": "Coop",
+                    "total": 2.5,
+                    "items": [
+                        {
+                            "product_id": 77,
+                            "article": "Pan",
+                            "quantity": 1,
+                            "price": 2.5,
+                            "net_price": None,
+                            "discount": 0,
+                            "discount_percent": 0,
+                            "total": 2.5,
+                            "user_name": "Jose",
+                        }
+                    ],
+                },
+            }
+        )
+
+    monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+
+    result = client.post(
+        "/api/gastos/tickets",
+        json={
+            "purchase_date": "2026-10-05",
+            "supermarket": "Coop",
+            "items": [
+                {
+                    "article": "Pan",
+                    "quantity": 1,
+                    "price": 2.5,
+                    "net_price": "",
+                    "discount": "",
+                    "discount_percent": "",
+                    "user_name": "Jose",
+                }
+            ],
+        },
+    )
+    assert result.status_code == 200
+    assert result.json()["inventory_restocked"] == [{"id": inventory_id, "name": "Pan"}]
+
+    state = client.get("/api/state").json()
+    item = next(x for x in state["inventory"] if x["id"] == inventory_id)
+    assert item["stock_status"] == "ok"
+    assert item["shopping_requested"] is False
+    assert item["gastos_product_id"] == 77
+    assert item["gastos_linked"] is True
+    assert item["last_purchased_at"] == "2026-10-05"
+    assert item["last_purchase_ticket_id"] == 101
+    assert all(x["id"] != inventory_id for x in state["shopping_list"])
+
+
+def test_inventory_gastos_product_link_is_unique(client):
+    first = client.post(
+        "/api/inventory",
+        json={
+            "name": "Leche",
+            "category": "Alimentación",
+            "stock_status": "ok",
+            "gastos_product_id": 12,
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/inventory",
+        json={
+            "name": "Otra leche",
+            "category": "Alimentación",
+            "stock_status": "ok",
+            "gastos_product_id": 12,
+        },
+    )
+    assert second.status_code == 409
+    assert "ya está vinculado" in second.json()["detail"]
