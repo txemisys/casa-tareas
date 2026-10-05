@@ -261,6 +261,9 @@ def init_db():
             CHECK(stock_status IN ('ok','low','out')),
           shopping_requested INTEGER NOT NULL DEFAULT 0,
           notes TEXT NOT NULL DEFAULT '',
+          gastos_product_id INTEGER,
+          last_purchased_at TEXT,
+          last_purchase_ticket_id INTEGER,
           active INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
@@ -304,6 +307,14 @@ def init_db():
         ensure_column(conn, "areas", "pause_started_on", "TEXT")
         ensure_column(conn, "areas", "paused_until", "TEXT")
         ensure_column(conn, "areas", "pause_resume_mode", "TEXT")
+        ensure_column(conn, "inventory_items", "gastos_product_id", "INTEGER")
+        ensure_column(conn, "inventory_items", "last_purchased_at", "TEXT")
+        ensure_column(conn, "inventory_items", "last_purchase_ticket_id", "INTEGER")
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_gastos_product
+               ON inventory_items(gastos_product_id)
+               WHERE gastos_product_id IS NOT NULL"""
+        )
 
         if conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
             conn.executemany(
@@ -683,6 +694,7 @@ def inventory_item_json(conn, item, include_required_by=False):
         d["shopping_requested"] or d["stock_status"] in {"low", "out"}
     )
     d["available"] = d["stock_status"] != "out"
+    d["gastos_linked"] = d.get("gastos_product_id") is not None
     area = None
     if d.get("area_id"):
         row = conn.execute(
@@ -2862,6 +2874,7 @@ class InventoryItemIn(BaseModel):
     stock_status: str = "ok"
     shopping_requested: bool = False
     notes: str = Field(default="", max_length=1000)
+    gastos_product_id: int | None = Field(default=None, ge=1)
 
 
 class InventoryStockIn(BaseModel):
@@ -3215,6 +3228,45 @@ def test_gastos_comida_connection():
 
 
 
+def reconcile_gastos_ticket_with_inventory(conn, ticket):
+    if not isinstance(ticket, dict):
+        return []
+    ticket_id = ticket.get("id")
+    purchased_at = ticket.get("date") or ticket.get("purchase_date") or today_local().isoformat()
+    product_ids = {
+        int(item["product_id"])
+        for item in ticket.get("items", [])
+        if isinstance(item, dict) and item.get("product_id") is not None
+    }
+    if not product_ids:
+        return []
+    placeholders = ",".join("?" for _ in product_ids)
+    rows = conn.execute(
+        f"""SELECT * FROM inventory_items
+            WHERE active=1 AND gastos_product_id IN ({placeholders})""",
+        tuple(sorted(product_ids)),
+    ).fetchall()
+    updated = []
+    for item in rows:
+        conn.execute(
+            """UPDATE inventory_items
+               SET stock_status='ok',shopping_requested=0,last_purchased_at=?,
+                   last_purchase_ticket_id=?,updated_at=?
+               WHERE id=?""",
+            (purchased_at, ticket_id, iso_now(), item["id"]),
+        )
+        updated.append({"id": item["id"], "name": item["name"]})
+        log_activity(
+            conn,
+            "inventory_purchased",
+            f'Repuesto desde Gastos: "{item["name"]}"',
+            detail=f'Ticket #{ticket_id}' if ticket_id else "",
+            entity_type="inventory",
+            entity_id=item["id"],
+        )
+    return updated
+
+
 def gastos_proxy_call(path, method="GET", payload=None):
     with db() as conn:
         try:
@@ -3266,7 +3318,12 @@ def gastos_ticket(ticket_id: int):
 
 @app.post("/api/gastos/tickets")
 def gastos_create_ticket(payload: dict):
-    return gastos_proxy_call("/api/v1/tickets", method="POST", payload=payload)
+    result = gastos_proxy_call("/api/v1/tickets", method="POST", payload=payload)
+    with db() as conn:
+        result["inventory_restocked"] = reconcile_gastos_ticket_with_inventory(
+            conn, result.get("ticket")
+        )
+    return result
 
 
 @app.put("/api/gastos/tickets/{ticket_id}")
@@ -3818,7 +3875,7 @@ def delete_attachment(attachment_id: int):
     return {"ok": True}
 
 
-def validate_inventory_payload(conn, payload: InventoryItemIn):
+def validate_inventory_payload(conn, payload: InventoryItemIn, item_id=None):
     if payload.stock_status not in {"ok", "low", "out"}:
         raise HTTPException(400, "Estado de stock no válido")
     if payload.area_id is not None:
@@ -3828,6 +3885,17 @@ def validate_inventory_payload(conn, payload: InventoryItemIn):
         ).fetchone()
         if not area:
             raise HTTPException(400, "Área no válida o archivada")
+    if payload.gastos_product_id is not None:
+        linked = conn.execute(
+            """SELECT id,name FROM inventory_items
+               WHERE gastos_product_id=? AND active=1 AND (? IS NULL OR id<>?)""",
+            (payload.gastos_product_id, item_id, item_id),
+        ).fetchone()
+        if linked:
+            raise HTTPException(
+                409,
+                f'El producto de Gastos ya está vinculado a "{linked["name"]}"',
+            )
 
 
 @app.post("/api/inventory")
@@ -3847,7 +3915,7 @@ def create_inventory_item(payload: InventoryItemIn):
             conn.execute(
                 """UPDATE inventory_items SET active=1,category=?,area_id=?,unit=?,
                    purchase_quantity=?,stock_status=?,shopping_requested=?,notes=?,
-                   updated_at=? WHERE id=?""",
+                   gastos_product_id=?,updated_at=? WHERE id=?""",
                 (
                     payload.category.strip() or "General",
                     payload.area_id,
@@ -3856,6 +3924,7 @@ def create_inventory_item(payload: InventoryItemIn):
                     payload.stock_status,
                     1 if payload.shopping_requested else 0,
                     payload.notes.strip(),
+                    payload.gastos_product_id,
                     iso_now(),
                     existing["id"],
                 ),
@@ -3865,8 +3934,8 @@ def create_inventory_item(payload: InventoryItemIn):
             cur = conn.execute(
                 """INSERT INTO inventory_items(
                    name,category,area_id,unit,purchase_quantity,stock_status,
-                   shopping_requested,notes,active,created_at,updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?,1,?,?)""",
+                   shopping_requested,notes,gastos_product_id,active,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)""",
                 (
                     name,
                     payload.category.strip() or "General",
@@ -3876,6 +3945,7 @@ def create_inventory_item(payload: InventoryItemIn):
                     payload.stock_status,
                     1 if payload.shopping_requested else 0,
                     payload.notes.strip(),
+                    payload.gastos_product_id,
                     iso_now(),
                     iso_now(),
                 ),
@@ -3897,7 +3967,7 @@ def update_inventory_item(item_id: int, payload: InventoryItemIn):
     if not name:
         raise HTTPException(400, "El nombre del producto no puede estar vacío")
     with db() as conn:
-        validate_inventory_payload(conn, payload)
+        validate_inventory_payload(conn, payload, item_id=item_id)
         item = conn.execute(
             "SELECT * FROM inventory_items WHERE id=?",
             (item_id,),
@@ -3908,7 +3978,7 @@ def update_inventory_item(item_id: int, payload: InventoryItemIn):
             conn.execute(
                 """UPDATE inventory_items SET name=?,category=?,area_id=?,unit=?,
                    purchase_quantity=?,stock_status=?,shopping_requested=?,notes=?,
-                   updated_at=? WHERE id=?""",
+                   gastos_product_id=?,updated_at=? WHERE id=?""",
                 (
                     name,
                     payload.category.strip() or "General",
@@ -3918,6 +3988,7 @@ def update_inventory_item(item_id: int, payload: InventoryItemIn):
                     payload.stock_status,
                     1 if payload.shopping_requested else 0,
                     payload.notes.strip(),
+                    payload.gastos_product_id,
                     iso_now(),
                     item_id,
                 ),
@@ -4016,6 +4087,63 @@ def restore_inventory_item(item_id: int):
             (iso_now(), item_id),
         )
         return {"ok": True}
+
+
+@app.put("/api/inventory/{item_id}/gastos-product/{product_id}")
+def link_inventory_to_gastos_product(item_id: int, product_id: int):
+    product = gastos_proxy_call(f"/api/v1/products/{product_id}")
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=? AND active=1",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto de inventario no encontrado")
+        other = conn.execute(
+            """SELECT id,name FROM inventory_items
+               WHERE gastos_product_id=? AND id<>? AND active=1""",
+            (product_id, item_id),
+        ).fetchone()
+        if other:
+            raise HTTPException(
+                409,
+                f'Este producto de Gastos ya está vinculado a "{other["name"]}"',
+            )
+        conn.execute(
+            "UPDATE inventory_items SET gastos_product_id=?,updated_at=? WHERE id=?",
+            (product_id, iso_now(), item_id),
+        )
+        log_activity(
+            conn,
+            "inventory_gastos_linked",
+            f'Vinculado "{item["name"]}" con Gastos: {product.get("name", product_id)}',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+    return {"ok": True, "product": product}
+
+
+@app.delete("/api/inventory/{item_id}/gastos-product")
+def unlink_inventory_from_gastos_product(item_id: int):
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=? AND active=1",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto de inventario no encontrado")
+        conn.execute(
+            "UPDATE inventory_items SET gastos_product_id=NULL,updated_at=? WHERE id=?",
+            (iso_now(), item_id),
+        )
+        log_activity(
+            conn,
+            "inventory_gastos_unlinked",
+            f'Desvinculado "{item["name"]}" de Gastos',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+    return {"ok": True}
 
 
 @app.post("/api/vacation/start")
