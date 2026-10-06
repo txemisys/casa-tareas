@@ -302,3 +302,28 @@ def test_json_ticket_api_rejects_invalid_payload(tmp_path):
     )
     assert response.status_code == 400
     assert "Fecha" in response.json["detail"]
+
+
+def test_admin_reset_requires_confirmation_and_clears_gastos(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    created = client.post("/tickets", data=ticket_form())
+    assert created.status_code == 302
+    assert client.get("/api/v1/health").json["tickets"] == 1
+
+    rejected = client.post("/api/v1/admin/reset", json={"confirmation": "no"})
+    assert rejected.status_code == 400
+    assert client.get("/api/v1/health").json["tickets"] == 1
+
+    reset = client.post(
+        "/api/v1/admin/reset",
+        json={"confirmation": "BORRAR GASTOS"},
+    )
+    assert reset.status_code == 200
+    assert reset.json["ok"] is True
+
+    health = client.get("/api/v1/health").json
+    assert health["tickets"] == 0
+    assert health["items"] == 0
+    assert health["products"] == 0
