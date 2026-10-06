@@ -112,9 +112,16 @@ function translateCore(value,language){
  if(!value||language==="es")return value;
  var dict=dictionaries[language]||{};
  if(Object.prototype.hasOwnProperty.call(dict,value))return dict[value];
+ var prefixed=value.match(/^([^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]*)(.+)$/);
+ if(prefixed&&prefixed[1]&&Object.prototype.hasOwnProperty.call(dict,prefixed[2])){
+   return prefixed[1]+dict[prefixed[2]];
+ }
  var list=patterns[language]||[];
  for(var i=0;i<list.length;i++){
    if(list[i][0].test(value))return value.replace(list[i][0],list[i][1]);
+   if(prefixed&&prefixed[1]&&list[i][0].test(prefixed[2])){
+     return prefixed[1]+prefixed[2].replace(list[i][0],list[i][1]);
+   }
  }
  return value;
 }
