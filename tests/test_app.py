@@ -2928,3 +2928,50 @@ def test_task_reports_blocked_by_missing_supply(client):
     unblocked = next(t for t in state["tasks"] if t["id"] == task_id)
     assert unblocked["blocked_by_supplies"] is False
     assert unblocked["blocking_supplies"] == []
+
+
+def test_home_summary_combines_current_and_previous_month_spending(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000"},
+    )
+    assert saved.status_code == 200
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        assert timeout == 5
+        if "/api/v1/spending/summary?" not in request.full_url:
+            raise AssertionError(request.full_url)
+        if "from=2026-10-01" in request.full_url:
+            return FakeResponse(
+                {"from": "2026-10-01", "to": "2026-10-06", "total": 120.0, "ticket_count": 4}
+            )
+        if "from=2026-09-01" in request.full_url:
+            return FakeResponse(
+                {"from": "2026-09-01", "to": "2026-09-30", "total": 100.0, "ticket_count": 5}
+            )
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(app_module, "today_local", lambda: date(2026, 10, 6))
+
+    response = client.get("/api/gastos/home-summary")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["current_month"]["total"] == 120.0
+    assert data["previous_month"]["total"] == 100.0
+    assert data["change_percent"] == 20.0
