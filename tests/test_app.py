@@ -2783,3 +2783,68 @@ def test_inventory_gastos_product_link_is_unique(client):
     )
     assert second.status_code == 409
     assert "ya está vinculado" in second.json()["detail"]
+
+
+def test_shopping_list_creates_and_resolves_automatic_task(client):
+    initial = client.get("/api/state")
+    assert initial.status_code == 200
+    assert all(t["title"] != "Hacer la compra" or not t["active"] for t in initial.json()["tasks"])
+
+    created = client.post(
+        "/api/inventory",
+        json={
+            "name": "Papel de cocina",
+            "category": "Alimentación",
+            "stock_status": "out",
+            "shopping_requested": False,
+        },
+    )
+    assert created.status_code == 200
+    item_id = created.json()["id"]
+
+    state = client.get("/api/state").json()
+    shopping_task = next(t for t in state["tasks"] if t["title"] == "Hacer la compra")
+    assert shopping_task["active"] is True
+    assert shopping_task["is_suggested"] is True
+    assert shopping_task["need_score"] == 100
+    assert "Papel de cocina" in shopping_task["description"]
+    assert [item["id"] for item in shopping_task["supplies"]] == [item_id]
+    assert any(t["id"] == shopping_task["id"] for t in state["suggested"])
+    assert all(t["id"] != shopping_task["id"] for t in state["today"])
+
+    restocked = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "ok", "shopping_requested": False},
+    )
+    assert restocked.status_code == 200
+
+    state = client.get("/api/state").json()
+    same_task = next(t for t in state["tasks"] if t["id"] == shopping_task["id"])
+    assert same_task["active"] is False
+    assert not state["shopping_list"]
+    assert all(t["id"] != shopping_task["id"] for t in state["suggested"])
+
+
+def test_shopping_task_reuses_single_task_when_list_changes(client):
+    first = client.post(
+        "/api/inventory",
+        json={"name": "Leche", "category": "Alimentación", "stock_status": "low"},
+    )
+    assert first.status_code == 200
+
+    state = client.get("/api/state").json()
+    task = next(t for t in state["tasks"] if t["title"] == "Hacer la compra")
+    task_id = task["id"]
+
+    second = client.post(
+        "/api/inventory",
+        json={"name": "Pan", "category": "Alimentación", "stock_status": "out"},
+    )
+    assert second.status_code == 200
+
+    state = client.get("/api/state").json()
+    tasks = [t for t in state["tasks"] if t["title"] == "Hacer la compra"]
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == task_id
+    assert "Leche" in tasks[0]["description"]
+    assert "Pan" in tasks[0]["description"]
