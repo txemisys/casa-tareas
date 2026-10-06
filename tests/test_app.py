@@ -3018,7 +3018,11 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
                     "supermarket": "Migros",
                     "average_unit_price": 1.8,
                 },
-                "habitual_supermarket": {"supermarket": "Coop", "purchase_count": 4},
+                "habitual_supermarket": {
+                    "supermarket": "Coop",
+                    "purchase_count": 4,
+                    "average_unit_price": 2.1,
+                },
                 "average_unit_price": 1.9,
                 "last_purchase": {
                     "date": "2026-10-01",
@@ -3032,7 +3036,11 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
                     "supermarket": "Migros",
                     "average_unit_price": 7.5,
                 },
-                "habitual_supermarket": {"supermarket": "Migros", "purchase_count": 3},
+                "habitual_supermarket": {
+                    "supermarket": "Migros",
+                    "purchase_count": 3,
+                    "average_unit_price": 7.5,
+                },
                 "average_unit_price": 7.8,
                 "last_purchase": {
                     "date": "2026-09-20",
@@ -3058,7 +3066,18 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
     assert migros["count"] == 2
     assert migros["priced_count"] == 2
     assert migros["estimated_unit_total"] == 9.3
+    assert migros["estimated_baseline_unit_total"] == 9.6
+    assert migros["estimated_saving_unit_total"] == 0.3
+    assert migros["comparable_count"] == 2
+    assert migros["savings_count"] == 1
+    assert data["estimated_saving_unit_total"] == 0.3
+    assert data["savings_count"] == 1
     assert {item["name"] for item in migros["items"]} == {"Leche", "Café"}
+    leche = next(item for item in migros["items"] if item["name"] == "Leche")
+    assert leche["recommended_unit_price"] == 1.8
+    assert leche["habitual_unit_price"] == 2.1
+    assert leche["estimated_saving_unit"] == 0.3
+    assert leche["estimated_saving_percent"] == 14.3
 
 
 def test_shopping_task_is_identified_for_supermarket_plan_display(client):
