@@ -1785,9 +1785,11 @@ def settings_json(conn):
     attachment_count = conn.execute(
         "SELECT COUNT(*) FROM attachments"
     ).fetchone()[0]
+    runtime = runtime_settings_json()
+    runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.2.1",
-        "runtime": runtime_settings_json(),
+        "version": "1.3.2",
+        "runtime": runtime,
         "telegram": telegram,
         "calendars": {
             "subscription_count": calendar_count,
@@ -2994,6 +2996,7 @@ class TelegramTokenIn(BaseModel):
 
 class RuntimeSettingsIn(BaseModel):
     timezone: str = Field(min_length=1, max_length=100)
+    language: str = Field(default="es", pattern="^(es|en|de)$")
     telegram_poll_seconds: int = Field(ge=30, le=3600)
     ical_sync_minutes: int = Field(ge=5, le=1440)
     max_attachment_mb: int = Field(ge=1, le=500)
@@ -3303,6 +3306,7 @@ def update_runtime_settings(payload: RuntimeSettingsIn):
 
     with db() as conn:
         set_meta(conn, "setting_timezone", timezone_name)
+        set_meta(conn, "setting_language", payload.language)
         set_meta(
             conn,
             "setting_telegram_poll_seconds",
