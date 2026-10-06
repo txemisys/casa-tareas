@@ -2873,6 +2873,10 @@ def task_json(conn, task):
     d["need_score"] = need["score"] if need else None
     d["need_label"] = need["label"] if need else None
     d["is_suggested"] = bool(need and need["suggested"])
+    shopping_task_id = get_meta(conn, "shopping_task_id")
+    d["is_shopping_task"] = bool(
+        shopping_task_id and str(d["id"]) == str(shopping_task_id)
+    )
 
     area = None
     if d.get("area_id"):
@@ -3416,6 +3420,90 @@ def gastos_proxy_call(path, method="GET", payload=None):
         except RuntimeError as exc:
             set_meta(conn, "gastos_comida_last_error", str(exc))
             raise HTTPException(502, str(exc))
+
+
+@app.get("/api/gastos/shopping-plan")
+def gastos_shopping_plan():
+    with db() as conn:
+        shopping = [
+            inventory_item_json(conn, row, include_required_by=True)
+            for row in shopping_inventory_rows(conn)
+        ]
+
+    items = []
+    groups = {}
+    for item in shopping:
+        plan_item = {
+            "id": item["id"],
+            "name": item["name"],
+            "purchase_quantity": item.get("purchase_quantity", ""),
+            "category": item.get("category", "General"),
+            "gastos_product_id": item.get("gastos_product_id"),
+            "recommended_supermarket": None,
+            "habitual_supermarket": None,
+            "average_unit_price": None,
+            "last_purchase": None,
+            "pricing_available": False,
+        }
+        product_id = item.get("gastos_product_id")
+        if product_id:
+            try:
+                stats = gastos_proxy_call(f"/api/v1/products/{int(product_id)}/stats")
+                recommended = stats.get("recommended_supermarket")
+                habitual = stats.get("habitual_supermarket")
+                plan_item["recommended_supermarket"] = recommended
+                plan_item["habitual_supermarket"] = habitual
+                plan_item["average_unit_price"] = stats.get("average_unit_price")
+                plan_item["last_purchase"] = stats.get("last_purchase")
+                plan_item["pricing_available"] = bool(
+                    recommended or stats.get("last_purchase")
+                )
+            except HTTPException:
+                pass
+
+        supermarket = (
+            (plan_item["recommended_supermarket"] or {}).get("supermarket")
+            or "Sin recomendación"
+        )
+        groups.setdefault(supermarket, []).append(plan_item)
+        items.append(plan_item)
+
+    ordered_groups = []
+    for supermarket in sorted(
+        groups,
+        key=lambda value: (value == "Sin recomendación", value.casefold()),
+    ):
+        group_items = groups[supermarket]
+        estimated_total = 0.0
+        priced_count = 0
+        for item in group_items:
+            price = (item.get("recommended_supermarket") or {}).get(
+                "average_unit_price"
+            )
+            if price is not None:
+                estimated_total += float(price)
+                priced_count += 1
+        ordered_groups.append(
+            {
+                "supermarket": supermarket,
+                "items": group_items,
+                "count": len(group_items),
+                "estimated_unit_total": round(estimated_total, 2),
+                "priced_count": priced_count,
+            }
+        )
+
+    return {
+        "items": items,
+        "groups": ordered_groups,
+        "count": len(items),
+        "linked_count": sum(
+            1 for item in items if item.get("gastos_product_id") is not None
+        ),
+        "recommended_count": sum(
+            1 for item in items if item.get("recommended_supermarket")
+        ),
+    }
 
 
 @app.get("/api/gastos/home-summary")
