@@ -151,7 +151,27 @@ async function addGastosProductToInventory(productId){
 }
 async function searchGastosProducts(){var input=document.getElementById("gastosProductSearch");gastosProductQuery=input?input.value.trim():"";try{await loadGastosProducts();renderGastosContent()}catch(e){alert(e.message)}}
 async function clearGastosProductSearch(){gastosProductQuery="";await searchGastosProducts()}
-async function openGastosProduct(id){try{var s=await api("/api/gastos/products/"+id+"/stats");var last=s.last_purchase;var html='<div class="modalhead"><div><h2>'+esc(s.name)+'</h2><div class="muted">Estadísticas históricas del producto.</div></div><button class="ghost" onclick="closeModal()">×</button></div><div class="gastos-product-stats"><div class="gastos-product-stat"><span>Compras</span><strong>'+Number(s.purchase_count||0)+'</strong></div><div class="gastos-product-stat"><span>Cantidad</span><strong>'+gastosNumber(s.quantity_total,3)+'</strong></div><div class="gastos-product-stat"><span>Gasto total</span><strong>'+esc(gastosMoney(s.spend_total))+'</strong></div><div class="gastos-product-stat"><span>Media por compra</span><strong>'+esc(gastosMoney(s.average_line_total))+'</strong></div></div>'+(last?'<section class="gastos-panel" style="margin-top:13px"><strong>Última compra</strong><div class="muted" style="margin-top:5px">'+esc(gastosDate(last.date))+' · '+esc(last.supermarket)+' · '+gastosNumber(last.quantity,3)+' uds · '+esc(gastosMoney(last.line_total))+'</div></section>':"")+'<div class="modalfoot"><button class="primary" onclick="closeModal()">Cerrar</button></div>';showModal(html)}catch(e){alert(e.message)}}
+async function openGastosProduct(id){
+  try{
+    var s=await api("/api/gastos/products/"+id+"/stats"),last=s.last_purchase,rec=s.recommended_supermarket,habit=s.habitual_supermarket,shops=s.supermarket_stats||[];
+    var trend=s.price_change_percent==null?"—":((s.price_change_percent>0?"+":"")+gastosNumber(s.price_change_percent,1)+"%");
+    var html='<div class="modalhead"><div><h2>'+esc(s.name)+'</h2><div class="muted">Histórico de precio y supermercados.</div></div><button class="ghost" onclick="closeModal()">×</button></div>'+
+      '<div class="gastos-product-stats">'+
+        '<div class="gastos-product-stat"><span>Compras</span><strong>'+Number(s.purchase_count||0)+'</strong></div>'+
+        '<div class="gastos-product-stat"><span>Precio unitario medio</span><strong>'+(s.average_unit_price==null?"—":esc(gastosMoney(s.average_unit_price)))+'</strong></div>'+
+        '<div class="gastos-product-stat"><span>Mejor precio histórico</span><strong>'+(s.lowest_unit_price==null?"—":esc(gastosMoney(s.lowest_unit_price)))+'</strong></div>'+
+        '<div class="gastos-product-stat"><span>Último cambio</span><strong>'+esc(trend)+'</strong></div>'+
+      '</div>'+
+      '<div class="gastos-grid" style="margin-top:13px">'+
+        '<section class="gastos-panel"><strong>💡 Supermercado recomendado</strong><div class="muted" style="margin-top:5px">'+(rec?esc(rec.supermarket)+' · media '+esc(gastosMoney(rec.average_unit_price))+' / unidad':'Sin datos suficientes')+'</div></section>'+
+        '<section class="gastos-panel"><strong>🛒 Supermercado habitual</strong><div class="muted" style="margin-top:5px">'+(habit?esc(habit.supermarket)+' · '+Number(habit.purchase_count||0)+' compras':'Sin datos suficientes')+'</div></section>'+
+      '</div>'+
+      (last?'<section class="gastos-panel" style="margin-top:13px"><strong>Última compra</strong><div class="muted" style="margin-top:5px">'+esc(gastosDate(last.date))+' · '+esc(last.supermarket)+' · '+gastosNumber(last.quantity,3)+' uds · '+esc(gastosMoney(last.line_total))+(last.unit_price==null?"":' · '+esc(gastosMoney(last.unit_price))+' / unidad')+'</div></section>':"")+
+      (shops.length?'<section class="gastos-panel" style="margin-top:13px"><div class="gastos-panel-head"><div><h3>Comparativa por supermercado</h3><p>Media histórica por unidad y última compra registrada.</p></div></div><div class="gastos-table-wrap"><table class="gastos-table"><thead><tr><th>Supermercado</th><th>Compras</th><th>Media/u.</th><th>Último/u.</th><th>Última fecha</th></tr></thead><tbody>'+shops.map(function(x){return'<tr><td>'+esc(x.supermarket)+'</td><td>'+Number(x.purchase_count||0)+'</td><td>'+(x.average_unit_price==null?"—":esc(gastosMoney(x.average_unit_price)))+'</td><td>'+(x.last_unit_price==null?"—":esc(gastosMoney(x.last_unit_price)))+'</td><td>'+esc(x.last_date?gastosDate(x.last_date):"—")+'</td></tr>'}).join("")+'</tbody></table></div></section>':"")+
+      '<div class="modalfoot"><button class="primary" onclick="closeModal()">Cerrar</button></div>';
+    showModal(html)
+  }catch(e){alert(e.message)}
+}
 function renderGastosLookups(){
   var l=gastosDashboard.lookups||{};
   function card(category,title,values){return'<div class="gastos-lookup"><div><strong>'+esc(title)+'</strong><div class="muted">Oculta errores de los desplegables sin borrar el histórico.</div></div><select id="lookup-'+category+'"><option value="">Selecciona…</option>'+(values||[]).map(function(v){return'<option value="'+esc(v)+'">'+esc(v)+'</option>'}).join("")+'</select><button class="danger" onclick="deleteGastosLookup(\''+category+'\')">Quitar de listas</button></div>'}
