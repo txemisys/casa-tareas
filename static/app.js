@@ -130,6 +130,7 @@ async function loadShoppingPlan(force){
   shoppingPlanLoaded=true;shoppingPlanLoading=false;
   if(view==="tasks"&&taskSection==="inventory")renderInventory();
   if(view==="board")renderBoard();
+  if(view==="gastos"&&typeof renderGastosContent==="function")renderGastosContent();
 }
 function taskDescription(t){
   if(t&&t.is_shopping_task&&shoppingPlan&&shoppingPlan.groups&&shoppingPlan.groups.length){
