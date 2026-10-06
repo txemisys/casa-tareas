@@ -819,6 +819,7 @@ def inventory_item_json(conn, item, include_required_by=False):
             area["active"] = bool(area["active"])
     d["area"] = area
     if include_required_by:
+        shopping_task_id = get_meta(conn, "shopping_task_id")
         d["required_by"] = [
             {"id": r["id"], "title": r["title"], "active": bool(r["active"])}
             for r in conn.execute(
@@ -826,8 +827,9 @@ def inventory_item_json(conn, item, include_required_by=False):
                    FROM task_supplies s
                    JOIN tasks t ON t.id=s.task_id
                    WHERE s.item_id=? AND t.active=1
+                     AND (? IS NULL OR t.id<>?)
                    ORDER BY t.title COLLATE NOCASE,t.id""",
-                (d["id"],),
+                (d["id"], shopping_task_id, shopping_task_id),
             ).fetchall()
         ]
     return d
