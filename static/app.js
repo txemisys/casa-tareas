@@ -1,5 +1,5 @@
 var state={people:[],people_all:[],areas:[],areas_all:[],today:[],suggested:[],upcoming:[],tasks:[],inventory:[],inventory_all:[],shopping_list:[],events:[],external_events:[],agenda_events:[],calendar_subscriptions:[],event_today:[],event_upcoming:[],alerts_due:[],activity:[],vacation:{active:false,started_on:null,return_date:null,resume_mode:"continue_cycle",excluded_area_ids:[]},telegram:{token_configured:false,token_source:"none",token_editable:true,chat_id:null,chat_title:"",bot_username:"",poll_seconds:60,last_contact_at:null,worker_running:false},settings:{version:"",runtime:{timezone:"Europe/Zurich",telegram_poll_seconds:60,ical_sync_minutes:30,max_attachment_mb:20},telegram:{},calendars:{subscription_count:0},attachments:{count:0,max_mb:20},integrations:{gastos_comida:{configured:false,url:"",source:"none",last_ok_at:null,last_error:""}}},history:[],stats:[],last_undo:null};var view="board";var taskSection="tasks";var dragged=null;var areaDraggedTask=null;var dropBusy=false;var suggestMinutes=null;var mobileBoardIndex=2;var boardScrollRAF=null;var toastTimer=null;var browserNotified={};
-var homeGastosSummary=null;var homeGastosLoading=false;var homeGastosError="";
+var homeGastosSummary=null;var homeGastosLoading=false;var homeGastosLoaded=false;var homeGastosError="";
 var views=[["board","Tablero","▦"],["tasks","Tareas","☰"],["events","Agenda","📅"],["areas","Áreas","⌂"],["people","Personas","👥"],["gastos","Gastos","🛒"],["history","Historial","↺"],["settings","Configuración","⚙"]];
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"})[c]})}
 function apiUrl(url){if(url.indexOf("/api/")!==0)return url;try{var params=new URLSearchParams(window.location.search);var proxyToken=params.get("_sm_au_");if(proxyToken){var sep=url.indexOf("?")>=0?"&":"?";return url+sep+"_sm_au_="+encodeURIComponent(proxyToken)}}catch(e){}return url}
@@ -72,7 +72,7 @@ function householdOverviewPanel(){
   var spend="—",change="",tickets="—";
   if(homeGastosSummary){
     var cur=homeGastosSummary.current_month||{},pct=homeGastosSummary.change_percent;
-    spend=gastosMoney?gastosMoney(cur.total||0):Number(cur.total||0).toFixed(2)+" €";
+    spend=typeof gastosMoney==="function"?gastosMoney(cur.total||0):Number(cur.total||0).toFixed(2)+" €";
     tickets=Number(cur.ticket_count||0);
     if(pct!=null)change=(pct>0?"+":"")+gastosNumber(pct,1)+"% vs. mes anterior";
   }
@@ -84,10 +84,10 @@ function householdOverviewPanel(){
   '</div>'+(homeGastosError?'<div class="settings-warning" style="margin-top:10px">No se pudo cargar el resumen de Gastos: '+esc(homeGastosError)+'</div>':"")+'</section>';
 }
 async function loadHomeGastosSummary(){
-  if(homeGastosLoading||homeGastosSummary)return;
+  if(homeGastosLoading||homeGastosLoaded)return;
   homeGastosLoading=true;homeGastosError="";
   try{homeGastosSummary=await api("/api/gastos/home-summary")}catch(e){homeGastosError=e.message||String(e)}
-  homeGastosLoading=false;
+  homeGastosLoading=false;homeGastosLoaded=true;
   if(view==="board")renderBoard();
 }
 
