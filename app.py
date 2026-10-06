@@ -570,7 +570,120 @@ def restore_completion_payload(conn, payload):
     restore_queue_row(conn, payload.get("queue"))
 
 
+def shopping_inventory_rows(conn):
+    return conn.execute(
+        """SELECT * FROM inventory_items
+           WHERE active=1 AND (shopping_requested=1 OR stock_status IN ('low','out'))
+           ORDER BY category COLLATE NOCASE,name COLLATE NOCASE,id"""
+    ).fetchall()
+
+
+def sync_shopping_task(conn):
+    shopping = shopping_inventory_rows(conn)
+    raw_id = get_meta(conn, "shopping_task_id")
+    task = None
+    if raw_id:
+        try:
+            task = conn.execute(
+                "SELECT * FROM tasks WHERE id=?",
+                (int(raw_id),),
+            ).fetchone()
+        except (TypeError, ValueError):
+            task = None
+            delete_meta(conn, "shopping_task_id")
+
+    if not shopping:
+        if task:
+            if task["active"]:
+                conn.execute("UPDATE tasks SET active=0 WHERE id=?", (task["id"],))
+                log_activity(
+                    conn,
+                    "shopping_task_resolved",
+                    'Lista vacía: resuelta "Hacer la compra"',
+                    entity_type="task",
+                    entity_id=task["id"],
+                )
+            conn.execute("DELETE FROM today_queue WHERE task_id=?", (task["id"],))
+            conn.execute("DELETE FROM task_supplies WHERE task_id=?", (task["id"],))
+        return task["id"] if task else None
+
+    names = [row["name"] for row in shopping]
+    description = "Falta: " + ", ".join(names[:8])
+    if len(names) > 8:
+        description += f" y {len(names) - 8} más"
+    definition = "La lista de compra vuelve a estar vacía."
+    now = iso_now()
+
+    if not task:
+        cur = conn.execute(
+            """INSERT INTO tasks(
+               title,description,category,color,icon,recurrence_type,frequency_days,
+               initial_due_date,anchor_date,area_id,owner_person_id,task_type,
+               definition_of_done,responsibility_notes,estimated_minutes,active,created_at
+               ) VALUES(?,?,?,?,?,'none',NULL,?,?,NULL,NULL,'execution',?,?,NULL,1,?)""",
+            (
+                "Hacer la compra",
+                description,
+                "Compra",
+                "#dcecff",
+                "🛒",
+                today_local().isoformat(),
+                today_local().isoformat(),
+                definition,
+                "Tarea automática generada desde Inventario y Comprar.",
+                now,
+            ),
+        )
+        task_id = cur.lastrowid
+        set_meta(conn, "shopping_task_id", task_id)
+        log_activity(
+            conn,
+            "shopping_task_created",
+            f'Creada "Hacer la compra" · {len(shopping)} producto(s)',
+            entity_type="task",
+            entity_id=task_id,
+        )
+    else:
+        task_id = task["id"]
+        was_active = bool(task["active"])
+        conn.execute(
+            """UPDATE tasks
+               SET title='Hacer la compra',description=?,category='Compra',
+                   color='#dcecff',icon='🛒',recurrence_type='none',
+                   frequency_days=NULL,initial_due_date=?,anchor_date=?,
+                   task_type='execution',definition_of_done=?,
+                   responsibility_notes=?,estimated_minutes=NULL,active=1
+               WHERE id=?""",
+            (
+                description,
+                today_local().isoformat(),
+                today_local().isoformat(),
+                definition,
+                "Tarea automática generada desde Inventario y Comprar.",
+                task_id,
+            ),
+        )
+        if not was_active:
+            log_activity(
+                conn,
+                "shopping_task_reactivated",
+                f'Reactivada "Hacer la compra" · {len(shopping)} producto(s)',
+                entity_type="task",
+                entity_id=task_id,
+            )
+
+    conn.execute("DELETE FROM task_supplies WHERE task_id=?", (task_id,))
+    conn.executemany(
+        "INSERT INTO task_supplies(task_id,item_id) VALUES(?,?)",
+        [(task_id, row["id"]) for row in shopping],
+    )
+    return task_id
+
+
 def task_need(conn, task):
+    shopping_task_id = get_meta(conn, "shopping_task_id")
+    if task["active"] and shopping_task_id and str(task["id"]) == str(shopping_task_id):
+        return {"score": 100, "label": "Pendiente", "suggested": True}
     if not task["active"] or task["recurrence_type"] == "none":
         return None
     if effective_task_pause(conn, task):
@@ -2954,13 +3067,14 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.2.1"}
+    return {"ok": True, "version": "1.3.1"}
 
 
 @app.get("/api/state")
 def state():
     with db() as conn:
         sync_pause_states(conn)
+        sync_shopping_task(conn)
         sync_today(conn)
         people_all = [
             dict(r)
