@@ -1144,14 +1144,123 @@ def api_v1_product_stats(product_id):
     )
     quantity_total = sum(float(row[2] or 0.0) for row in rows)
     spend_total = sum(float(row[3] or 0.0) for row in rows)
+    priced_rows = []
+    supermarket_map = {}
+    for purchase_date, supermarket, quantity, line_total in rows:
+        quantity = float(quantity or 0.0)
+        line_total = float(line_total or 0.0)
+        unit_price = (line_total / quantity) if quantity > 0 else None
+        if unit_price is not None:
+            priced_rows.append(
+                {
+                    "date": purchase_date,
+                    "supermarket": supermarket,
+                    "unit_price": unit_price,
+                }
+            )
+            stats = supermarket_map.setdefault(
+                supermarket,
+                {
+                    "supermarket": supermarket,
+                    "purchase_count": 0,
+                    "unit_price_total": 0.0,
+                    "priced_count": 0,
+                    "last_unit_price": None,
+                    "last_date": None,
+                },
+            )
+            stats["purchase_count"] += 1
+            stats["unit_price_total"] += unit_price
+            stats["priced_count"] += 1
+            if stats["last_date"] is None or purchase_date > stats["last_date"]:
+                stats["last_date"] = purchase_date
+                stats["last_unit_price"] = unit_price
+        else:
+            stats = supermarket_map.setdefault(
+                supermarket,
+                {
+                    "supermarket": supermarket,
+                    "purchase_count": 0,
+                    "unit_price_total": 0.0,
+                    "priced_count": 0,
+                    "last_unit_price": None,
+                    "last_date": None,
+                },
+            )
+            stats["purchase_count"] += 1
+
+    supermarket_stats = []
+    for stats in supermarket_map.values():
+        average_unit_price = (
+            stats["unit_price_total"] / stats["priced_count"]
+            if stats["priced_count"]
+            else None
+        )
+        supermarket_stats.append(
+            {
+                "supermarket": stats["supermarket"],
+                "purchase_count": stats["purchase_count"],
+                "average_unit_price": (
+                    round(average_unit_price, 2)
+                    if average_unit_price is not None
+                    else None
+                ),
+                "last_unit_price": (
+                    round(stats["last_unit_price"], 2)
+                    if stats["last_unit_price"] is not None
+                    else None
+                ),
+                "last_date": (
+                    stats["last_date"].strftime("%Y-%m-%d")
+                    if stats["last_date"] is not None
+                    else None
+                ),
+            }
+        )
+    supermarket_stats.sort(
+        key=lambda item: (
+            item["average_unit_price"] is None,
+            item["average_unit_price"] if item["average_unit_price"] is not None else 999999,
+            item["supermarket"].casefold(),
+        )
+    )
+
+    recommended = next(
+        (item for item in supermarket_stats if item["average_unit_price"] is not None),
+        None,
+    )
+    habitual = None
+    if supermarket_stats:
+        habitual = sorted(
+            supermarket_stats,
+            key=lambda item: (-item["purchase_count"], item["supermarket"].casefold()),
+        )[0]
+
     latest = None
     if rows:
+        latest_unit_price = (
+            float(rows[0][3] or 0.0) / float(rows[0][2] or 0.0)
+            if float(rows[0][2] or 0.0) > 0
+            else None
+        )
         latest = {
             "date": rows[0][0].strftime("%Y-%m-%d"),
             "supermarket": rows[0][1],
             "quantity": float(rows[0][2] or 0.0),
             "line_total": round(float(rows[0][3] or 0.0), 2),
+            "unit_price": round(latest_unit_price, 2) if latest_unit_price is not None else None,
         }
+
+    unit_prices = [row["unit_price"] for row in priced_rows]
+    latest_unit_price = unit_prices[0] if unit_prices else None
+    previous_unit_price = unit_prices[1] if len(unit_prices) > 1 else None
+    price_change_percent = None
+    if latest_unit_price is not None and previous_unit_price not in (None, 0):
+        price_change_percent = round(
+            ((latest_unit_price - previous_unit_price) / previous_unit_price) * 100,
+            1,
+        )
+
     return json_response(
         {
             "id": product.id,
@@ -1160,6 +1269,13 @@ def api_v1_product_stats(product_id):
             "quantity_total": round(quantity_total, 3),
             "spend_total": round(spend_total, 2),
             "average_line_total": round(spend_total / len(rows), 2) if rows else 0.0,
+            "average_unit_price": round(sum(unit_prices) / len(unit_prices), 2) if unit_prices else None,
+            "lowest_unit_price": round(min(unit_prices), 2) if unit_prices else None,
+            "highest_unit_price": round(max(unit_prices), 2) if unit_prices else None,
+            "price_change_percent": price_change_percent,
+            "recommended_supermarket": recommended,
+            "habitual_supermarket": habitual,
+            "supermarket_stats": supermarket_stats,
             "last_purchase": latest,
         }
     )
