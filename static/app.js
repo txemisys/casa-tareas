@@ -1,4 +1,5 @@
 var state={people:[],people_all:[],areas:[],areas_all:[],today:[],suggested:[],upcoming:[],tasks:[],inventory:[],inventory_all:[],shopping_list:[],events:[],external_events:[],agenda_events:[],calendar_subscriptions:[],event_today:[],event_upcoming:[],alerts_due:[],activity:[],vacation:{active:false,started_on:null,return_date:null,resume_mode:"continue_cycle",excluded_area_ids:[]},telegram:{token_configured:false,token_source:"none",token_editable:true,chat_id:null,chat_title:"",bot_username:"",poll_seconds:60,last_contact_at:null,worker_running:false},settings:{version:"",runtime:{timezone:"Europe/Zurich",telegram_poll_seconds:60,ical_sync_minutes:30,max_attachment_mb:20},telegram:{},calendars:{subscription_count:0},attachments:{count:0,max_mb:20},integrations:{gastos_comida:{configured:false,url:"",source:"none",last_ok_at:null,last_error:""}}},history:[],stats:[],last_undo:null};var view="board";var taskSection="tasks";var dragged=null;var areaDraggedTask=null;var dropBusy=false;var suggestMinutes=null;var mobileBoardIndex=2;var boardScrollRAF=null;var toastTimer=null;var browserNotified={};
+var homeGastosSummary=null;var homeGastosLoading=false;var homeGastosError="";
 var views=[["board","Tablero","▦"],["tasks","Tareas","☰"],["events","Agenda","📅"],["areas","Áreas","⌂"],["people","Personas","👥"],["gastos","Gastos","🛒"],["history","Historial","↺"],["settings","Configuración","⚙"]];
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"})[c]})}
 function apiUrl(url){if(url.indexOf("/api/")!==0)return url;try{var params=new URLSearchParams(window.location.search);var proxyToken=params.get("_sm_au_");if(proxyToken){var sep=url.indexOf("?")>=0?"&":"?";return url+sep+"_sm_au_="+encodeURIComponent(proxyToken)}}catch(e){}return url}
@@ -65,12 +66,37 @@ async function resumeArea(id){try{await api("/api/areas/"+id+"/resume",{method:"
 function completedCard(x){var can=!!x.can_undo_to_today;var drag=can?' draggable="true" data-origin="done" data-id="'+x.task_id+'" data-completion-id="'+x.id+'"':'';var action=can?'<button class="ghost" onclick="undoCompletionToToday('+x.id+')">↶ Volver a Hoy</button>':'';return '<div class="done-card"'+drag+'><div class="icon">'+esc(x.icon)+'</div><div><div class="title">'+esc(x.title)+'</div><div class="muted">'+new Date(x.completed_at).toLocaleString("es")+' · '+esc(x.name)+'</div></div><div class="done-actions"><div class="avatar" style="background:'+esc(x.color)+'">'+esc(x.person_icon)+'</div>'+action+'</div></div>'}
 async function undoCompletionToToday(completionId){try{var r=await api("/api/completions/"+completionId+"/undo-to-today",{method:"POST"});view="board";await load();showUndo('Realización deshecha · "'+(r.task_title||"Tarea")+'" vuelve a Hoy',null)}catch(e){alert(e.message)}}
 
-function renderBoard(){var recent=state.history.slice(0,8);var all=state.tasks.filter(function(t){return t.active});var upcomingEvents=state.event_upcoming||[];var todayEvents=state.event_today||[];var h='<div class="pagehead"><div><h1>Tablero</h1><div class="subtitle">Tareas y agenda doméstica en un mismo vistazo.</div></div><button class="primary" onclick="openTask()">+ Nueva tarea</button></div>'+activityPanel()+vacationPanel()+suggestionsPanel()+'<div class="mobile-board-nav"><button aria-label="Columna anterior" onclick="moveBoard(-1)">←</button><div class="mobile-board-meta"><strong id="mobileBoardLabel">Hoy</strong><span id="mobileBoardPos">3 / 4</span></div><button aria-label="Columna siguiente" onclick="moveBoard(1)">→</button></div><div class="kanban" id="kanbanBoard">';
+function householdOverviewPanel(){
+  var shopping=(state.shopping_list||[]).length;
+  var blocked=(state.tasks||[]).filter(function(t){return t.active&&t.blocked_by_supplies}).length;
+  var spend="—",change="",tickets="—";
+  if(homeGastosSummary){
+    var cur=homeGastosSummary.current_month||{},pct=homeGastosSummary.change_percent;
+    spend=gastosMoney?gastosMoney(cur.total||0):Number(cur.total||0).toFixed(2)+" €";
+    tickets=Number(cur.ticket_count||0);
+    if(pct!=null)change=(pct>0?"+":"")+gastosNumber(pct,1)+"% vs. mes anterior";
+  }
+  return '<section class="activity-panel"><div class="activity-head"><div><div class="suggestions-title">🏠 Resumen del hogar</div><div class="suggestions-help">Tareas, compra e impacto de Gastos en un solo vistazo.</div></div><button class="ghost" onclick="go(\'gastos\')">Abrir Gastos</button></div><div class="stats" style="margin:0">'+
+    '<div class="stat"><div class="count">'+shopping+'</div><div>Por comprar</div><div class="muted">productos</div></div>'+
+    '<div class="stat"><div class="count">'+blocked+'</div><div>Bloqueadas</div><div class="muted">tareas por material</div></div>'+
+    '<div class="stat"><div class="count">'+esc(spend)+'</div><div>Gasto del mes</div><div class="muted">'+esc(change||"sin comparación")+'</div></div>'+
+    '<div class="stat"><div class="count">'+esc(tickets)+'</div><div>Tickets</div><div class="muted">este mes</div></div>'+
+  '</div>'+(homeGastosError?'<div class="settings-warning" style="margin-top:10px">No se pudo cargar el resumen de Gastos: '+esc(homeGastosError)+'</div>':"")+'</section>';
+}
+async function loadHomeGastosSummary(){
+  if(homeGastosLoading||homeGastosSummary)return;
+  homeGastosLoading=true;homeGastosError="";
+  try{homeGastosSummary=await api("/api/gastos/home-summary")}catch(e){homeGastosError=e.message||String(e)}
+  homeGastosLoading=false;
+  if(view==="board")renderBoard();
+}
+
+function renderBoard(){var recent=state.history.slice(0,8);var all=state.tasks.filter(function(t){return t.active});var upcomingEvents=state.event_upcoming||[];var todayEvents=state.event_today||[];var h='<div class="pagehead"><div><h1>Tablero</h1><div class="subtitle">Tareas y agenda doméstica en un mismo vistazo.</div></div><button class="primary" onclick="openTask()">+ Nueva tarea</button></div>'+householdOverviewPanel()+activityPanel()+vacationPanel()+suggestionsPanel()+'<div class="mobile-board-nav"><button aria-label="Columna anterior" onclick="moveBoard(-1)">←</button><div class="mobile-board-meta"><strong id="mobileBoardLabel">Hoy</strong><span id="mobileBoardPos">3 / 4</span></div><button aria-label="Columna siguiente" onclick="moveBoard(1)">→</button></div><div class="kanban" id="kanbanBoard">';
 h+='<section class="kanban-col" id="col-all" data-drop="all"><div class="kanban-head"><div><div class="kanban-title">Todas las tareas</div><div class="drag-hint">Catálogo activo · usa + Hoy para añadir</div></div><span class="kanban-count">'+all.length+'</span></div><div class="kanban-list">'+(all.length?all.map(function(t){return boardCard(t,"all")}).join(""):'<div class="kanban-empty">No hay tareas activas.</div>')+'</div></section>';
 h+='<section class="kanban-col" id="col-upcoming" data-drop="upcoming"><div class="kanban-head"><div><div class="kanban-title">Próximamente</div><div class="drag-hint">Arrastra aquí desde Hoy para corregir una selección</div></div><span class="kanban-count">'+(state.upcoming.length+upcomingEvents.length)+'</span></div><div class="kanban-list">'+upcomingEvents.map(function(e){return eventCard(e,true)}).join("")+(state.upcoming.length?state.upcoming.map(function(t){return boardCard(t,"upcoming")}).join(""):(upcomingEvents.length?"":'<div class="kanban-empty">No hay nada próximo.</div>'))+'</div></section>';
 h+='<section class="kanban-col" id="col-today" data-drop="today"><div class="kanban-head"><div><div class="kanban-title">Hoy</div><div class="drag-hint">Arrastra a Próximamente para quitar de Hoy</div></div><span class="kanban-count">'+(state.today.length+todayEvents.length)+'</span></div><div class="kanban-list">'+todayEvents.map(function(e){return eventCard(e,true)}).join("")+(state.today.length?state.today.map(function(t){return boardCard(t,"today")}).join(""):(todayEvents.length?"":'<div class="kanban-empty">🎉 Nada pendiente para hoy.</div>'))+'</div></section>';
 h+='<section class="kanban-col" id="col-done" data-drop="done"><div class="kanban-head"><div><div class="kanban-title">Realizadas</div><div class="drag-hint">Arrastra una realización reversible a Hoy para corregirla</div></div><span class="kanban-count">'+recent.length+'</span></div><div class="kanban-list">'+(recent.length?recent.map(completedCard).join(""):'<div class="kanban-empty">Aún no hay tareas realizadas.</div>')+'</div></section></div>';
-document.getElementById("main").innerHTML=h;bindBoardDrag();initMobileBoard()}
+document.getElementById("main").innerHTML=h;bindBoardDrag();initMobileBoard();loadHomeGastosSummary()}
 
 function renderToday(){var h='<div class="pagehead"><div><h1>Hoy</h1><div class="subtitle">Una cola pequeña para lo que toca ahora.</div></div><button class="primary" onclick="openTask()">+ Añadir</button></div>';
 h+=state.today.length?'<div class="grid">'+state.today.map(function(t){return card(t,"today")}).join("")+"</div>":'<div class="empty">🎉 No hay tareas en la cola de hoy.</div>';
