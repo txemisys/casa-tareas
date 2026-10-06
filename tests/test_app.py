@@ -2888,3 +2888,43 @@ def test_settings_expose_separate_reset_confirmation_actions(client):
     assert "Sí, borrar" in bundle.text
     assert "Borrar datos de Casa Tareas" in bundle.text
     assert "Borrar datos de Gastos" in bundle.text
+
+
+def test_task_reports_blocked_by_missing_supply(client):
+    item = client.post(
+        "/api/inventory",
+        json={
+            "name": "Detergente",
+            "category": "Limpieza",
+            "stock_status": "out",
+        },
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    task = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Limpiar cocina",
+            supply_ids=[item_id],
+        ),
+    )
+    assert task.status_code == 200
+    task_id = task.json()["id"]
+
+    state = client.get("/api/state").json()
+    blocked = next(t for t in state["tasks"] if t["id"] == task_id)
+    assert blocked["blocked_by_supplies"] is True
+    assert blocked["blocking_supplies"] == [{"id": item_id, "name": "Detergente"}]
+    assert blocked["need_label"] == "Bloqueada por material"
+
+    restored = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "ok", "shopping_requested": False},
+    )
+    assert restored.status_code == 200
+
+    state = client.get("/api/state").json()
+    unblocked = next(t for t in state["tasks"] if t["id"] == task_id)
+    assert unblocked["blocked_by_supplies"] is False
+    assert unblocked["blocking_supplies"] == []
