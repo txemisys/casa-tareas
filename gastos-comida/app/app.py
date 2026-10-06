@@ -1075,12 +1075,6 @@ def api_reset_database():
         db.session.query(Ticket).delete(synchronize_session=False)
         db.session.query(Product).delete(synchronize_session=False)
         db.session.query(LookupExclusion).delete(synchronize_session=False)
-        db.session.execute(
-            text(
-                "DELETE FROM sqlite_sequence "
-                "WHERE name IN ('ticket','ticket_item','product','lookup_exclusion')"
-            )
-        )
         db.session.commit()
     except Exception:
         db.session.rollback()
