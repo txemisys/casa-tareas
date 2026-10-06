@@ -1065,6 +1065,29 @@ def tickets_api():
     return json_response([ticket_to_dict(ticket) for ticket in tickets])
 
 
+@app.route("/api/v1/admin/reset", methods=["POST"])
+def api_reset_database():
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirmation") != "BORRAR GASTOS":
+        return json_response({"detail": "Confirmación incorrecta"}, 400)
+    try:
+        db.session.query(TicketItem).delete(synchronize_session=False)
+        db.session.query(Ticket).delete(synchronize_session=False)
+        db.session.query(Product).delete(synchronize_session=False)
+        db.session.query(LookupExclusion).delete(synchronize_session=False)
+        db.session.execute(
+            text(
+                "DELETE FROM sqlite_sequence "
+                "WHERE name IN ('ticket','ticket_item','product','lookup_exclusion')"
+            )
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return json_response({"ok": True, "tickets": 0, "items": 0, "products": 0})
+
+
 @app.route("/api/v1/health", methods=["GET"])
 def api_v1_health():
     return json_response(
