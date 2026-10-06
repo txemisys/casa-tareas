@@ -2449,6 +2449,7 @@ def test_runtime_settings_apply_without_container_restart(client):
         "/api/settings/runtime",
         json={
             "timezone": "UTC",
+            "language": "en",
             "telegram_poll_seconds": 90,
             "ical_sync_minutes": 15,
             "max_attachment_mb": 32,
@@ -2459,6 +2460,7 @@ def test_runtime_settings_apply_without_container_restart(client):
     assert body["runtime"] == {
         "timezone": "UTC",
         "telegram_poll_seconds": 90,
+        "language": "en",
         "ical_sync_minutes": 15,
         "max_attachment_bytes": 32 * 1024 * 1024,
         "max_attachment_mb": 32,
@@ -2470,6 +2472,7 @@ def test_runtime_settings_apply_without_container_restart(client):
 
     with app_module.db() as conn:
         assert app_module.get_meta(conn, "setting_timezone") == "UTC"
+        assert app_module.get_meta(conn, "setting_language") == "en"
         assert app_module.get_meta(conn, "setting_telegram_poll_seconds") == "90"
         assert app_module.get_meta(conn, "setting_ical_sync_minutes") == "15"
         assert (
@@ -2479,6 +2482,7 @@ def test_runtime_settings_apply_without_container_restart(client):
 
     settings = client.get("/api/settings").json()
     assert settings["runtime"]["timezone"] == "UTC"
+    assert settings["runtime"]["language"] == "en"
     assert settings["attachments"]["max_mb"] == 32
 
 
@@ -2499,13 +2503,20 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.2.1' in root.text
+    assert '/static/app.js?v=1.3.2' in root.text
+    assert '/static/gastos.js?v=1.3.2' in root.text
+    assert '/static/gastos.css?v=1.3.0' in root.text
+    assert '/static/i18n.js?v=1.3.2' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.1.2")
+    bundle = client.get("/static/app.js?v=1.3.2")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
+    i18n = client.get("/static/i18n.js?v=1.3.2")
+    assert i18n.status_code == 200
+    assert '"Idioma":"Language"' in i18n.text
+    assert '"Idioma":"Sprache"' in i18n.text
     assert 'api("/api/state")' in bundle.text
 
 
@@ -2582,3 +2593,510 @@ def test_gastos_comida_integration_rejects_unsafe_base_url_shapes(client):
         json={"url": "file:///tmp/gastos.db"},
     )
     assert invalid_scheme.status_code == 400
+
+
+def test_gastos_proxy_dashboard_and_ticket_write(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000"},
+    )
+    assert saved.status_code == 200
+
+    seen = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        seen.append((request.full_url, request.get_method(), request.data, timeout))
+        if request.full_url.startswith("http://gastos-comida:8000/api/v1/dashboard"):
+            return FakeResponse(
+                {
+                    "metrics": [],
+                    "filters": {"chart_year": 2026},
+                    "lookups": {"articles": [], "users": [], "supermarkets": []},
+                    "years": [2026],
+                    "recent_tickets": [],
+                    "counts": {"products": 3, "tickets": 2, "items": 4},
+                }
+            )
+        if request.full_url == "http://gastos-comida:8000/api/v1/tickets":
+            assert request.get_method() == "POST"
+            body = json.loads(request.data.decode("utf-8"))
+            assert body["supermarket"] == "Coop"
+            return FakeResponse({"ok": True, "ticket": {"id": 9, **body, "date": body["purchase_date"], "total": 1.5}})
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+
+    dashboard = client.get("/api/gastos/dashboard?chart_year=2026")
+    assert dashboard.status_code == 200
+    assert dashboard.json()["counts"]["tickets"] == 2
+
+    created = client.post(
+        "/api/gastos/tickets",
+        json={
+            "purchase_date": "2026-10-04",
+            "supermarket": "Coop",
+            "items": [
+                {
+                    "article": "Pan",
+                    "quantity": 1,
+                    "price": 1.5,
+                    "net_price": "",
+                    "discount": "",
+                    "discount_percent": "",
+                    "user_name": "Jose",
+                }
+            ],
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["ticket"]["id"] == 9
+    assert any(method == "POST" for _url, method, _data, _timeout in seen)
+
+
+def test_gastos_purchase_restock_linked_inventory_item(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000"},
+    )
+    assert saved.status_code == 200
+
+    created_inventory = client.post(
+        "/api/inventory",
+        json={
+            "name": "Pan",
+            "category": "Alimentación",
+            "area_id": None,
+            "unit": "paquete",
+            "purchase_quantity": "1 paquete",
+            "stock_status": "out",
+            "shopping_requested": True,
+            "notes": "",
+            "gastos_product_id": 77,
+        },
+    )
+    assert created_inventory.status_code == 200
+    inventory_id = created_inventory.json()["id"]
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        assert request.full_url == "http://gastos-comida:8000/api/v1/tickets"
+        assert request.get_method() == "POST"
+        return FakeResponse(
+            {
+                "ok": True,
+                "ticket": {
+                    "id": 101,
+                    "date": "2026-10-05",
+                    "supermarket": "Coop",
+                    "total": 2.5,
+                    "items": [
+                        {
+                            "product_id": 77,
+                            "article": "Pan",
+                            "quantity": 1,
+                            "price": 2.5,
+                            "net_price": None,
+                            "discount": 0,
+                            "discount_percent": 0,
+                            "total": 2.5,
+                            "user_name": "Jose",
+                        }
+                    ],
+                },
+            }
+        )
+
+    monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+
+    result = client.post(
+        "/api/gastos/tickets",
+        json={
+            "purchase_date": "2026-10-05",
+            "supermarket": "Coop",
+            "items": [
+                {
+                    "article": "Pan",
+                    "quantity": 1,
+                    "price": 2.5,
+                    "net_price": "",
+                    "discount": "",
+                    "discount_percent": "",
+                    "user_name": "Jose",
+                }
+            ],
+        },
+    )
+    assert result.status_code == 200
+    assert result.json()["inventory_restocked"] == [{"id": inventory_id, "name": "Pan"}]
+
+    state = client.get("/api/state").json()
+    item = next(x for x in state["inventory"] if x["id"] == inventory_id)
+    assert item["stock_status"] == "ok"
+    assert item["shopping_requested"] is False
+    assert item["gastos_product_id"] == 77
+    assert item["gastos_linked"] is True
+    assert item["last_purchased_at"] == "2026-10-05"
+    assert item["last_purchase_ticket_id"] == 101
+    assert all(x["id"] != inventory_id for x in state["shopping_list"])
+
+
+def test_inventory_gastos_product_link_is_unique(client):
+    first = client.post(
+        "/api/inventory",
+        json={
+            "name": "Leche",
+            "category": "Alimentación",
+            "stock_status": "ok",
+            "gastos_product_id": 12,
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/inventory",
+        json={
+            "name": "Otra leche",
+            "category": "Alimentación",
+            "stock_status": "ok",
+            "gastos_product_id": 12,
+        },
+    )
+    assert second.status_code == 409
+    assert "ya está vinculado" in second.json()["detail"]
+
+
+def test_shopping_list_creates_and_resolves_automatic_task(client):
+    initial = client.get("/api/state")
+    assert initial.status_code == 200
+    assert all(t["title"] != "Hacer la compra" or not t["active"] for t in initial.json()["tasks"])
+
+    created = client.post(
+        "/api/inventory",
+        json={
+            "name": "Papel de cocina",
+            "category": "Alimentación",
+            "stock_status": "out",
+            "shopping_requested": False,
+        },
+    )
+    assert created.status_code == 200
+    item_id = created.json()["id"]
+
+    state = client.get("/api/state").json()
+    shopping_task = next(t for t in state["tasks"] if t["title"] == "Hacer la compra")
+    assert shopping_task["active"] is True
+    assert shopping_task["is_suggested"] is True
+    assert shopping_task["need_score"] == 100
+    assert "Papel de cocina" in shopping_task["description"]
+    assert [item["id"] for item in shopping_task["supplies"]] == [item_id]
+    assert any(t["id"] == shopping_task["id"] for t in state["suggested"])
+    assert all(t["id"] != shopping_task["id"] for t in state["today"])
+
+    restocked = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "ok", "shopping_requested": False},
+    )
+    assert restocked.status_code == 200
+
+    state = client.get("/api/state").json()
+    same_task = next(t for t in state["tasks"] if t["id"] == shopping_task["id"])
+    assert same_task["active"] is False
+    assert not state["shopping_list"]
+    assert all(t["id"] != shopping_task["id"] for t in state["suggested"])
+
+
+def test_shopping_task_reuses_single_task_when_list_changes(client):
+    first = client.post(
+        "/api/inventory",
+        json={"name": "Leche", "category": "Alimentación", "stock_status": "low"},
+    )
+    assert first.status_code == 200
+
+    state = client.get("/api/state").json()
+    task = next(t for t in state["tasks"] if t["title"] == "Hacer la compra")
+    task_id = task["id"]
+
+    second = client.post(
+        "/api/inventory",
+        json={"name": "Pan", "category": "Alimentación", "stock_status": "out"},
+    )
+    assert second.status_code == 200
+
+    state = client.get("/api/state").json()
+    tasks = [t for t in state["tasks"] if t["title"] == "Hacer la compra"]
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == task_id
+    assert "Leche" in tasks[0]["description"]
+    assert "Pan" in tasks[0]["description"]
+
+
+def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
+    rejected = client.post("/api/admin/reset-casa", json={"confirmation": "no"})
+    assert rejected.status_code == 400
+
+    before = client.get("/api/state").json()
+    assert before["tasks"]
+    assert before["areas"]
+    assert before["people"]
+
+    reset = client.post("/api/admin/reset-casa", json={"confirmation": "BORRAR TAREAS"})
+    assert reset.status_code == 200
+    assert reset.json()["ok"] is True
+
+    after = client.get("/api/state").json()
+    assert after["tasks"] == []
+    assert after["areas"] == []
+    assert after["people"] == []
+    assert after["inventory"] == []
+    assert after["events"] == []
+
+    import app as app_module
+    app_module.init_db()
+    after_restart = client.get("/api/state").json()
+    assert after_restart["tasks"] == []
+    assert after_restart["areas"] == []
+    assert after_restart["people"] == []
+
+
+def test_settings_expose_separate_reset_confirmation_actions(client):
+    root = client.get("/")
+    assert root.status_code == 200
+    bundle = client.get("/static/app.js?v=1.3.2")
+    assert bundle.status_code == 200
+    assert "openDatabaseResetConfirm" in bundle.text
+    assert "No, cancelar" in bundle.text
+    assert "Sí, borrar" in bundle.text
+    assert "Borrar datos de Casa Tareas" in bundle.text
+    assert "Borrar datos de Gastos" in bundle.text
+
+
+def test_task_reports_blocked_by_missing_supply(client):
+    item = client.post(
+        "/api/inventory",
+        json={
+            "name": "Detergente",
+            "category": "Limpieza",
+            "stock_status": "out",
+        },
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    task = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Limpiar cocina",
+            supply_ids=[item_id],
+        ),
+    )
+    assert task.status_code == 200
+    task_id = task.json()["id"]
+
+    state = client.get("/api/state").json()
+    blocked = next(t for t in state["tasks"] if t["id"] == task_id)
+    assert blocked["blocked_by_supplies"] is True
+    assert blocked["blocking_supplies"] == [{"id": item_id, "name": "Detergente"}]
+    assert blocked["need_label"] == "Bloqueada por material"
+
+    restored = client.post(
+        f"/api/inventory/{item_id}/stock",
+        json={"stock_status": "ok", "shopping_requested": False},
+    )
+    assert restored.status_code == 200
+
+    state = client.get("/api/state").json()
+    unblocked = next(t for t in state["tasks"] if t["id"] == task_id)
+    assert unblocked["blocked_by_supplies"] is False
+    assert unblocked["blocking_supplies"] == []
+
+
+def test_home_summary_combines_current_and_previous_month_spending(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000"},
+    )
+    assert saved.status_code == 200
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        assert timeout == 5
+        if "/api/v1/spending/summary?" not in request.full_url:
+            raise AssertionError(request.full_url)
+        if "from=2026-10-01" in request.full_url:
+            return FakeResponse(
+                {"from": "2026-10-01", "to": "2026-10-06", "total": 120.0, "ticket_count": 4}
+            )
+        if "from=2026-09-01" in request.full_url:
+            return FakeResponse(
+                {"from": "2026-09-01", "to": "2026-09-30", "total": 100.0, "ticket_count": 5}
+            )
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(app_module, "today_local", lambda: date(2026, 10, 6))
+
+    response = client.get("/api/gastos/home-summary")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["current_month"]["total"] == 120.0
+    assert data["previous_month"]["total"] == 100.0
+    assert data["change_percent"] == 20.0
+
+
+def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monkeypatch):
+    import app as app_module
+
+    first = client.post(
+        "/api/inventory",
+        json={
+            "name": "Leche",
+            "category": "Alimentación",
+            "stock_status": "out",
+            "gastos_product_id": 10,
+        },
+    )
+    second = client.post(
+        "/api/inventory",
+        json={
+            "name": "Café",
+            "category": "Alimentación",
+            "stock_status": "low",
+            "gastos_product_id": 20,
+        },
+    )
+    third = client.post(
+        "/api/inventory",
+        json={
+            "name": "Papel",
+            "category": "Hogar",
+            "stock_status": "out",
+        },
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 200
+
+    def fake_proxy(path, method="GET", payload=None):
+        assert method == "GET"
+        if path.endswith("/10/stats"):
+            return {
+                "recommended_supermarket": {
+                    "supermarket": "Migros",
+                    "average_unit_price": 1.8,
+                },
+                "habitual_supermarket": {
+                    "supermarket": "Coop",
+                    "purchase_count": 4,
+                    "average_unit_price": 2.1,
+                },
+                "average_unit_price": 1.9,
+                "last_purchase": {
+                    "date": "2026-10-01",
+                    "supermarket": "Coop",
+                    "unit_price": 2.0,
+                },
+            }
+        if path.endswith("/20/stats"):
+            return {
+                "recommended_supermarket": {
+                    "supermarket": "Migros",
+                    "average_unit_price": 7.5,
+                },
+                "habitual_supermarket": {
+                    "supermarket": "Migros",
+                    "purchase_count": 3,
+                    "average_unit_price": 7.5,
+                },
+                "average_unit_price": 7.8,
+                "last_purchase": {
+                    "date": "2026-09-20",
+                    "supermarket": "Migros",
+                    "unit_price": 7.6,
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(app_module, "gastos_proxy_call", fake_proxy)
+
+    response = client.get("/api/gastos/shopping-plan")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 3
+    assert data["linked_count"] == 2
+    assert data["recommended_count"] == 2
+    assert [group["supermarket"] for group in data["groups"]] == [
+        "Migros",
+        "Sin recomendación",
+    ]
+    migros = data["groups"][0]
+    assert migros["count"] == 2
+    assert migros["priced_count"] == 2
+    assert migros["estimated_unit_total"] == 9.3
+    assert migros["estimated_baseline_unit_total"] == 9.6
+    assert migros["estimated_saving_unit_total"] == 0.3
+    assert migros["comparable_count"] == 2
+    assert migros["savings_count"] == 1
+    assert data["estimated_saving_unit_total"] == 0.3
+    assert data["savings_count"] == 1
+    assert {item["name"] for item in migros["items"]} == {"Leche", "Café"}
+    leche = next(item for item in migros["items"] if item["name"] == "Leche")
+    assert leche["recommended_unit_price"] == 1.8
+    assert leche["habitual_unit_price"] == 2.1
+    assert leche["estimated_saving_unit"] == 0.3
+    assert leche["estimated_saving_percent"] == 14.3
+
+
+def test_shopping_task_is_identified_for_supermarket_plan_display(client):
+    item = client.post(
+        "/api/inventory",
+        json={"name": "Arroz", "category": "Alimentación", "stock_status": "out"},
+    )
+    assert item.status_code == 200
+
+    state = client.get("/api/state").json()
+    shopping_tasks = [t for t in state["tasks"] if t.get("is_shopping_task")]
+    assert len(shopping_tasks) == 1
+    assert shopping_tasks[0]["title"] == "Hacer la compra"

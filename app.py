@@ -49,7 +49,7 @@ ICAL_SYNC_MINUTES = DEFAULT_ICAL_SYNC_MINUTES
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.2.1")
+app = FastAPI(title="Casa Tareas", version="1.3.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -261,6 +261,9 @@ def init_db():
             CHECK(stock_status IN ('ok','low','out')),
           shopping_requested INTEGER NOT NULL DEFAULT 0,
           notes TEXT NOT NULL DEFAULT '',
+          gastos_product_id INTEGER,
+          last_purchased_at TEXT,
+          last_purchase_ticket_id INTEGER,
           active INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
@@ -304,8 +307,20 @@ def init_db():
         ensure_column(conn, "areas", "pause_started_on", "TEXT")
         ensure_column(conn, "areas", "paused_until", "TEXT")
         ensure_column(conn, "areas", "pause_resume_mode", "TEXT")
+        ensure_column(conn, "inventory_items", "gastos_product_id", "INTEGER")
+        ensure_column(conn, "inventory_items", "last_purchased_at", "TEXT")
+        ensure_column(conn, "inventory_items", "last_purchase_ticket_id", "INTEGER")
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_gastos_product
+               ON inventory_items(gastos_product_id)
+               WHERE gastos_product_id IS NOT NULL"""
+        )
 
-        if conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
+        sample_data_enabled = conn.execute(
+            "SELECT value FROM app_meta WHERE key='sample_data_disabled'"
+        ).fetchone() is None
+
+        if sample_data_enabled and conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO people(name,color,icon) VALUES(?,?,?)",
                 [
@@ -315,7 +330,7 @@ def init_db():
                 ],
             )
 
-        if conn.execute("SELECT COUNT(*) FROM areas").fetchone()[0] == 0:
+        if sample_data_enabled and conn.execute("SELECT COUNT(*) FROM areas").fetchone()[0] == 0:
             conn.executemany(
                 """INSERT INTO areas(name,description,color,icon)
                    VALUES(?,?,?,?)""",
@@ -331,7 +346,7 @@ def init_db():
                 ],
             )
 
-        if conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0:
+        if sample_data_enabled and conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0:
             t = today_local()
             samples = [
                 ("Limpiar baño","Lavabo, ducha, espejo e inodoro","Baño","#d9ecff","🛁","cycle",7,t-timedelta(days=2)),
@@ -355,7 +370,7 @@ def init_db():
         household_v4 = conn.execute(
             "SELECT value FROM app_meta WHERE key='household_defaults_v4'"
         ).fetchone()
-        if not household_v4:
+        if sample_data_enabled and not household_v4:
             default_renames = {
                 "Ana": "Cosi",
                 "Juan": "Jose",
@@ -559,7 +574,120 @@ def restore_completion_payload(conn, payload):
     restore_queue_row(conn, payload.get("queue"))
 
 
+def shopping_inventory_rows(conn):
+    return conn.execute(
+        """SELECT * FROM inventory_items
+           WHERE active=1 AND (shopping_requested=1 OR stock_status IN ('low','out'))
+           ORDER BY category COLLATE NOCASE,name COLLATE NOCASE,id"""
+    ).fetchall()
+
+
+def sync_shopping_task(conn):
+    shopping = shopping_inventory_rows(conn)
+    raw_id = get_meta(conn, "shopping_task_id")
+    task = None
+    if raw_id:
+        try:
+            task = conn.execute(
+                "SELECT * FROM tasks WHERE id=?",
+                (int(raw_id),),
+            ).fetchone()
+        except (TypeError, ValueError):
+            task = None
+            delete_meta(conn, "shopping_task_id")
+
+    if not shopping:
+        if task:
+            if task["active"]:
+                conn.execute("UPDATE tasks SET active=0 WHERE id=?", (task["id"],))
+                log_activity(
+                    conn,
+                    "shopping_task_resolved",
+                    'Lista vacía: resuelta "Hacer la compra"',
+                    entity_type="task",
+                    entity_id=task["id"],
+                )
+            conn.execute("DELETE FROM today_queue WHERE task_id=?", (task["id"],))
+            conn.execute("DELETE FROM task_supplies WHERE task_id=?", (task["id"],))
+        return task["id"] if task else None
+
+    names = [row["name"] for row in shopping]
+    description = "Falta: " + ", ".join(names[:8])
+    if len(names) > 8:
+        description += f" y {len(names) - 8} más"
+    definition = "La lista de compra vuelve a estar vacía."
+    now = iso_now()
+
+    if not task:
+        cur = conn.execute(
+            """INSERT INTO tasks(
+               title,description,category,color,icon,recurrence_type,frequency_days,
+               initial_due_date,anchor_date,area_id,owner_person_id,task_type,
+               definition_of_done,responsibility_notes,estimated_minutes,active,created_at
+               ) VALUES(?,?,?,?,?,'none',NULL,?,?,NULL,NULL,'execution',?,?,NULL,1,?)""",
+            (
+                "Hacer la compra",
+                description,
+                "Compra",
+                "#dcecff",
+                "🛒",
+                today_local().isoformat(),
+                today_local().isoformat(),
+                definition,
+                "Tarea automática generada desde Inventario y Comprar.",
+                now,
+            ),
+        )
+        task_id = cur.lastrowid
+        set_meta(conn, "shopping_task_id", task_id)
+        log_activity(
+            conn,
+            "shopping_task_created",
+            f'Creada "Hacer la compra" · {len(shopping)} producto(s)',
+            entity_type="task",
+            entity_id=task_id,
+        )
+    else:
+        task_id = task["id"]
+        was_active = bool(task["active"])
+        conn.execute(
+            """UPDATE tasks
+               SET title='Hacer la compra',description=?,category='Compra',
+                   color='#dcecff',icon='🛒',recurrence_type='none',
+                   frequency_days=NULL,initial_due_date=?,anchor_date=?,
+                   task_type='execution',definition_of_done=?,
+                   responsibility_notes=?,estimated_minutes=NULL,active=1
+               WHERE id=?""",
+            (
+                description,
+                today_local().isoformat(),
+                today_local().isoformat(),
+                definition,
+                "Tarea automática generada desde Inventario y Comprar.",
+                task_id,
+            ),
+        )
+        if not was_active:
+            log_activity(
+                conn,
+                "shopping_task_reactivated",
+                f'Reactivada "Hacer la compra" · {len(shopping)} producto(s)',
+                entity_type="task",
+                entity_id=task_id,
+            )
+
+    conn.execute("DELETE FROM task_supplies WHERE task_id=?", (task_id,))
+    conn.executemany(
+        "INSERT INTO task_supplies(task_id,item_id) VALUES(?,?)",
+        [(task_id, row["id"]) for row in shopping],
+    )
+    return task_id
+
+
 def task_need(conn, task):
+    shopping_task_id = get_meta(conn, "shopping_task_id")
+    if task["active"] and shopping_task_id and str(task["id"]) == str(shopping_task_id):
+        return {"score": 100, "label": "Pendiente", "suggested": True}
     if not task["active"] or task["recurrence_type"] == "none":
         return None
     if effective_task_pause(conn, task):
@@ -604,6 +732,16 @@ def task_need(conn, task):
         label = "Conviene hacer"
     else:
         label = "Pendiente"
+
+    if conn.execute(
+        """SELECT 1
+           FROM task_supplies s
+           JOIN inventory_items i ON i.id=s.item_id
+           WHERE s.task_id=? AND i.active=1 AND i.stock_status='out'
+           LIMIT 1""",
+        (task["id"],),
+    ).fetchone():
+        label = "Bloqueada por material"
 
     return {
         "score": score,
@@ -683,6 +821,7 @@ def inventory_item_json(conn, item, include_required_by=False):
         d["shopping_requested"] or d["stock_status"] in {"low", "out"}
     )
     d["available"] = d["stock_status"] != "out"
+    d["gastos_linked"] = d.get("gastos_product_id") is not None
     area = None
     if d.get("area_id"):
         row = conn.execute(
@@ -694,6 +833,7 @@ def inventory_item_json(conn, item, include_required_by=False):
             area["active"] = bool(area["active"])
     d["area"] = area
     if include_required_by:
+        shopping_task_id = get_meta(conn, "shopping_task_id")
         d["required_by"] = [
             {"id": r["id"], "title": r["title"], "active": bool(r["active"])}
             for r in conn.execute(
@@ -701,8 +841,9 @@ def inventory_item_json(conn, item, include_required_by=False):
                    FROM task_supplies s
                    JOIN tasks t ON t.id=s.task_id
                    WHERE s.item_id=? AND t.active=1
+                     AND (? IS NULL OR t.id<>?)
                    ORDER BY t.title COLLATE NOCASE,t.id""",
-                (d["id"],),
+                (d["id"], shopping_task_id, shopping_task_id),
             ).fetchall()
         ]
     return d
@@ -1224,26 +1365,40 @@ def gastos_comida_status(conn):
     }
 
 
-def gastos_comida_api_request(conn, path):
+def gastos_comida_api_request(conn, path, method="GET", payload=None):
     base = gastos_comida_url(conn)
     if not base:
         raise RuntimeError("Gastos de comida todavía no está configurado")
+    body = None
+    headers = {"Accept": "application/json", "User-Agent": "Casa-Tareas/1.3"}
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
     request = urllib.request.Request(
         base + path,
-        headers={"Accept": "application/json", "User-Agent": "Casa-Tareas/1.2"},
+        data=body,
+        headers=headers,
+        method=method,
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Gastos de comida devolvió HTTP {exc.code}") from exc
+        detail = ""
+        try:
+            payload_error = json.loads(exc.read().decode("utf-8"))
+            detail = payload_error.get("detail", "") if isinstance(payload_error, dict) else ""
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            detail = ""
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Gastos de comida devolvió HTTP {exc.code}{suffix}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise RuntimeError(f"No se pudo contactar con Gastos de comida: {exc}") from exc
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError("Gastos de comida devolvió una respuesta no válida") from exc
-    if not isinstance(data, dict):
+    if not isinstance(data, (dict, list)):
         raise RuntimeError("Gastos de comida devolvió un formato inesperado")
     return data
 
@@ -1630,9 +1785,11 @@ def settings_json(conn):
     attachment_count = conn.execute(
         "SELECT COUNT(*) FROM attachments"
     ).fetchone()[0]
+    runtime = runtime_settings_json()
+    runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.2.1",
-        "runtime": runtime_settings_json(),
+        "version": "1.3.2",
+        "runtime": runtime,
         "telegram": telegram,
         "calendars": {
             "subscription_count": calendar_count,
@@ -2718,6 +2875,10 @@ def task_json(conn, task):
     d["need_score"] = need["score"] if need else None
     d["need_label"] = need["label"] if need else None
     d["is_suggested"] = bool(need and need["suggested"])
+    shopping_task_id = get_meta(conn, "shopping_task_id")
+    d["is_shopping_task"] = bool(
+        shopping_task_id and str(d["id"]) == str(shopping_task_id)
+    )
 
     area = None
     if d.get("area_id"):
@@ -2751,6 +2912,11 @@ def task_json(conn, task):
     ]
     d["shopping_supplies"] = [
         item for item in d["supplies"] if item["needs_purchase"]
+    ]
+    d["blocked_by_supplies"] = bool(d["missing_supplies"])
+    d["blocking_supplies"] = [
+        {"id": item["id"], "name": item["name"]}
+        for item in d["missing_supplies"]
     ]
 
     last = last_completion(conn, task["id"])
@@ -2830,6 +2996,7 @@ class TelegramTokenIn(BaseModel):
 
 class RuntimeSettingsIn(BaseModel):
     timezone: str = Field(min_length=1, max_length=100)
+    language: str = Field(default="es", pattern="^(es|en|de)$")
     telegram_poll_seconds: int = Field(ge=30, le=3600)
     ical_sync_minutes: int = Field(ge=5, le=1440)
     max_attachment_mb: int = Field(ge=1, le=500)
@@ -2848,11 +3015,16 @@ class InventoryItemIn(BaseModel):
     stock_status: str = "ok"
     shopping_requested: bool = False
     notes: str = Field(default="", max_length=1000)
+    gastos_product_id: int | None = Field(default=None, ge=1)
 
 
 class InventoryStockIn(BaseModel):
     stock_status: str
     shopping_requested: bool | None = None
+
+
+class ResetIn(BaseModel):
+    confirmation: str = ""
 
 
 class CalendarSubscriptionIn(BaseModel):
@@ -2927,13 +3099,14 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.2.1"}
+    return {"ok": True, "version": "1.3.1"}
 
 
 @app.get("/api/state")
 def state():
     with db() as conn:
         sync_pause_states(conn)
+        sync_shopping_task(conn)
         sync_today(conn)
         people_all = [
             dict(r)
@@ -3133,6 +3306,7 @@ def update_runtime_settings(payload: RuntimeSettingsIn):
 
     with db() as conn:
         set_meta(conn, "setting_timezone", timezone_name)
+        set_meta(conn, "setting_language", payload.language)
         set_meta(
             conn,
             "setting_telegram_poll_seconds",
@@ -3198,6 +3372,311 @@ def test_gastos_comida_connection():
         except RuntimeError as exc:
             set_meta(conn, "gastos_comida_last_error", str(exc))
             raise HTTPException(502, str(exc))
+
+
+
+def reconcile_gastos_ticket_with_inventory(conn, ticket):
+    if not isinstance(ticket, dict):
+        return []
+    ticket_id = ticket.get("id")
+    purchased_at = ticket.get("date") or ticket.get("purchase_date") or today_local().isoformat()
+    product_ids = {
+        int(item["product_id"])
+        for item in ticket.get("items", [])
+        if isinstance(item, dict) and item.get("product_id") is not None
+    }
+    if not product_ids:
+        return []
+    placeholders = ",".join("?" for _ in product_ids)
+    rows = conn.execute(
+        f"""SELECT * FROM inventory_items
+            WHERE active=1 AND gastos_product_id IN ({placeholders})""",
+        tuple(sorted(product_ids)),
+    ).fetchall()
+    updated = []
+    for item in rows:
+        conn.execute(
+            """UPDATE inventory_items
+               SET stock_status='ok',shopping_requested=0,last_purchased_at=?,
+                   last_purchase_ticket_id=?,updated_at=?
+               WHERE id=?""",
+            (purchased_at, ticket_id, iso_now(), item["id"]),
+        )
+        updated.append({"id": item["id"], "name": item["name"]})
+        log_activity(
+            conn,
+            "inventory_purchased",
+            f'Repuesto desde Gastos: "{item["name"]}"',
+            detail=f'Ticket #{ticket_id}' if ticket_id else "",
+            entity_type="inventory",
+            entity_id=item["id"],
+        )
+    return updated
+
+
+def gastos_proxy_call(path, method="GET", payload=None):
+    with db() as conn:
+        try:
+            result = gastos_comida_api_request(conn, path, method=method, payload=payload)
+            set_meta(conn, "gastos_comida_last_ok_at", iso_now())
+            delete_meta(conn, "gastos_comida_last_error")
+            return result
+        except RuntimeError as exc:
+            set_meta(conn, "gastos_comida_last_error", str(exc))
+            raise HTTPException(502, str(exc))
+
+
+@app.get("/api/gastos/shopping-plan")
+def gastos_shopping_plan():
+    with db() as conn:
+        shopping = [
+            inventory_item_json(conn, row, include_required_by=True)
+            for row in shopping_inventory_rows(conn)
+        ]
+
+    items = []
+    groups = {}
+    for item in shopping:
+        plan_item = {
+            "id": item["id"],
+            "name": item["name"],
+            "purchase_quantity": item.get("purchase_quantity", ""),
+            "category": item.get("category", "General"),
+            "gastos_product_id": item.get("gastos_product_id"),
+            "recommended_supermarket": None,
+            "habitual_supermarket": None,
+            "average_unit_price": None,
+            "recommended_unit_price": None,
+            "habitual_unit_price": None,
+            "estimated_saving_unit": None,
+            "estimated_saving_percent": None,
+            "last_purchase": None,
+            "pricing_available": False,
+        }
+        product_id = item.get("gastos_product_id")
+        if product_id:
+            try:
+                stats = gastos_proxy_call(f"/api/v1/products/{int(product_id)}/stats")
+                recommended = stats.get("recommended_supermarket")
+                habitual = stats.get("habitual_supermarket")
+                plan_item["recommended_supermarket"] = recommended
+                plan_item["habitual_supermarket"] = habitual
+                plan_item["average_unit_price"] = stats.get("average_unit_price")
+                plan_item["last_purchase"] = stats.get("last_purchase")
+                plan_item["pricing_available"] = bool(
+                    recommended or stats.get("last_purchase")
+                )
+
+                recommended_price = (
+                    recommended.get("average_unit_price")
+                    if isinstance(recommended, dict)
+                    else None
+                )
+                habitual_price = (
+                    habitual.get("average_unit_price")
+                    if isinstance(habitual, dict)
+                    else None
+                )
+                plan_item["recommended_unit_price"] = recommended_price
+                plan_item["habitual_unit_price"] = habitual_price
+                if (
+                    recommended_price is not None
+                    and habitual_price is not None
+                    and float(habitual_price) > 0
+                ):
+                    saving = max(
+                        0.0,
+                        float(habitual_price) - float(recommended_price),
+                    )
+                    plan_item["estimated_saving_unit"] = round(saving, 2)
+                    plan_item["estimated_saving_percent"] = round(
+                        (saving / float(habitual_price)) * 100,
+                        1,
+                    )
+            except HTTPException:
+                pass
+
+        supermarket = (
+            (plan_item["recommended_supermarket"] or {}).get("supermarket")
+            or "Sin recomendación"
+        )
+        groups.setdefault(supermarket, []).append(plan_item)
+        items.append(plan_item)
+
+    ordered_groups = []
+    total_saving = 0.0
+    total_savings_count = 0
+    for supermarket in sorted(
+        groups,
+        key=lambda value: (value == "Sin recomendación", value.casefold()),
+    ):
+        group_items = groups[supermarket]
+        estimated_total = 0.0
+        baseline_total = 0.0
+        group_saving = 0.0
+        priced_count = 0
+        comparable_count = 0
+        savings_count = 0
+        for item in group_items:
+            price = item.get("recommended_unit_price")
+            if price is not None:
+                estimated_total += float(price)
+                priced_count += 1
+
+            habitual_price = item.get("habitual_unit_price")
+            saving = item.get("estimated_saving_unit")
+            if habitual_price is not None and saving is not None:
+                baseline_total += float(habitual_price)
+                comparable_count += 1
+                group_saving += float(saving)
+                if float(saving) > 0:
+                    savings_count += 1
+
+        total_saving += group_saving
+        total_savings_count += savings_count
+        ordered_groups.append(
+            {
+                "supermarket": supermarket,
+                "items": group_items,
+                "count": len(group_items),
+                "estimated_unit_total": round(estimated_total, 2),
+                "estimated_baseline_unit_total": round(baseline_total, 2),
+                "estimated_saving_unit_total": round(group_saving, 2),
+                "priced_count": priced_count,
+                "comparable_count": comparable_count,
+                "savings_count": savings_count,
+            }
+        )
+
+    return {
+        "items": items,
+        "groups": ordered_groups,
+        "count": len(items),
+        "linked_count": sum(
+            1 for item in items if item.get("gastos_product_id") is not None
+        ),
+        "recommended_count": sum(
+            1 for item in items if item.get("recommended_supermarket")
+        ),
+        "estimated_saving_unit_total": round(total_saving, 2),
+        "savings_count": total_savings_count,
+    }
+
+
+@app.get("/api/gastos/home-summary")
+def gastos_home_summary():
+    today = today_local()
+    current_start = today.replace(day=1)
+    previous_end = current_start - timedelta(days=1)
+    previous_start = previous_end.replace(day=1)
+
+    current_query = urllib.parse.urlencode(
+        {"from": current_start.isoformat(), "to": today.isoformat()}
+    )
+    previous_query = urllib.parse.urlencode(
+        {"from": previous_start.isoformat(), "to": previous_end.isoformat()}
+    )
+    current = gastos_proxy_call("/api/v1/spending/summary?" + current_query)
+    previous = gastos_proxy_call("/api/v1/spending/summary?" + previous_query)
+    current_total = float(current.get("total") or 0.0)
+    previous_total = float(previous.get("total") or 0.0)
+    change_percent = None
+    if previous_total:
+        change_percent = round(
+            ((current_total - previous_total) / previous_total) * 100,
+            1,
+        )
+    return {
+        "current_month": current,
+        "previous_month": previous,
+        "change_percent": change_percent,
+    }
+
+
+@app.get("/api/gastos/dashboard")
+def gastos_dashboard(
+    article: str = "",
+    user: str = "",
+    supermarket: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    chart_year: int | None = None,
+):
+    params = {}
+    if article:
+        params["article"] = article
+    if user:
+        params["user"] = user
+    if supermarket:
+        params["supermarket"] = supermarket
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if chart_year is not None:
+        params["chart_year"] = str(chart_year)
+    query = urllib.parse.urlencode(params)
+    return gastos_proxy_call("/api/v1/dashboard" + (f"?{query}" if query else ""))
+
+
+@app.get("/api/gastos/tickets")
+def gastos_tickets(limit: int = 200):
+    limit = max(1, min(1000, limit))
+    return gastos_proxy_call(f"/api/v1/tickets?limit={limit}")
+
+
+@app.get("/api/gastos/tickets/{ticket_id}")
+def gastos_ticket(ticket_id: int):
+    return gastos_proxy_call(f"/api/v1/tickets/{ticket_id}")
+
+
+@app.post("/api/gastos/tickets")
+def gastos_create_ticket(payload: dict):
+    result = gastos_proxy_call("/api/v1/tickets", method="POST", payload=payload)
+    with db() as conn:
+        result["inventory_restocked"] = reconcile_gastos_ticket_with_inventory(
+            conn, result.get("ticket")
+        )
+    return result
+
+
+@app.put("/api/gastos/tickets/{ticket_id}")
+def gastos_update_ticket(ticket_id: int, payload: dict):
+    return gastos_proxy_call(f"/api/v1/tickets/{ticket_id}", method="PUT", payload=payload)
+
+
+@app.delete("/api/gastos/tickets/{ticket_id}")
+def gastos_delete_ticket(ticket_id: int):
+    return gastos_proxy_call(f"/api/v1/tickets/{ticket_id}", method="DELETE")
+
+
+@app.get("/api/gastos/products")
+def gastos_products(q: str = "", limit: int = 100):
+    params = {"limit": max(1, min(500, limit))}
+    if q:
+        params["q"] = q
+    return gastos_proxy_call("/api/v1/products?" + urllib.parse.urlencode(params))
+
+
+@app.get("/api/gastos/products/{product_id}")
+def gastos_product(product_id: int):
+    return gastos_proxy_call(f"/api/v1/products/{product_id}")
+
+
+@app.get("/api/gastos/products/{product_id}/stats")
+def gastos_product_stats(product_id: int):
+    return gastos_proxy_call(f"/api/v1/products/{product_id}/stats")
+
+
+@app.get("/api/gastos/lookups")
+def gastos_lookups():
+    return gastos_proxy_call("/api/v1/lookups")
+
+
+@app.delete("/api/gastos/lookups/{category}")
+def gastos_delete_lookup(category: str, value: str):
+    query = urllib.parse.urlencode({"value": value})
+    return gastos_proxy_call(f"/api/v1/lookups/{urllib.parse.quote(category)}?{query}", method="DELETE")
 
 
 @app.put("/api/settings/telegram-token")
@@ -3710,7 +4189,7 @@ def delete_attachment(attachment_id: int):
     return {"ok": True}
 
 
-def validate_inventory_payload(conn, payload: InventoryItemIn):
+def validate_inventory_payload(conn, payload: InventoryItemIn, item_id=None):
     if payload.stock_status not in {"ok", "low", "out"}:
         raise HTTPException(400, "Estado de stock no válido")
     if payload.area_id is not None:
@@ -3720,6 +4199,17 @@ def validate_inventory_payload(conn, payload: InventoryItemIn):
         ).fetchone()
         if not area:
             raise HTTPException(400, "Área no válida o archivada")
+    if payload.gastos_product_id is not None:
+        linked = conn.execute(
+            """SELECT id,name FROM inventory_items
+               WHERE gastos_product_id=? AND active=1 AND (? IS NULL OR id<>?)""",
+            (payload.gastos_product_id, item_id, item_id),
+        ).fetchone()
+        if linked:
+            raise HTTPException(
+                409,
+                f'El producto de Gastos ya está vinculado a "{linked["name"]}"',
+            )
 
 
 @app.post("/api/inventory")
@@ -3739,7 +4229,7 @@ def create_inventory_item(payload: InventoryItemIn):
             conn.execute(
                 """UPDATE inventory_items SET active=1,category=?,area_id=?,unit=?,
                    purchase_quantity=?,stock_status=?,shopping_requested=?,notes=?,
-                   updated_at=? WHERE id=?""",
+                   gastos_product_id=?,updated_at=? WHERE id=?""",
                 (
                     payload.category.strip() or "General",
                     payload.area_id,
@@ -3748,6 +4238,7 @@ def create_inventory_item(payload: InventoryItemIn):
                     payload.stock_status,
                     1 if payload.shopping_requested else 0,
                     payload.notes.strip(),
+                    payload.gastos_product_id,
                     iso_now(),
                     existing["id"],
                 ),
@@ -3757,8 +4248,8 @@ def create_inventory_item(payload: InventoryItemIn):
             cur = conn.execute(
                 """INSERT INTO inventory_items(
                    name,category,area_id,unit,purchase_quantity,stock_status,
-                   shopping_requested,notes,active,created_at,updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?,1,?,?)""",
+                   shopping_requested,notes,gastos_product_id,active,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)""",
                 (
                     name,
                     payload.category.strip() or "General",
@@ -3768,6 +4259,7 @@ def create_inventory_item(payload: InventoryItemIn):
                     payload.stock_status,
                     1 if payload.shopping_requested else 0,
                     payload.notes.strip(),
+                    payload.gastos_product_id,
                     iso_now(),
                     iso_now(),
                 ),
@@ -3789,7 +4281,7 @@ def update_inventory_item(item_id: int, payload: InventoryItemIn):
     if not name:
         raise HTTPException(400, "El nombre del producto no puede estar vacío")
     with db() as conn:
-        validate_inventory_payload(conn, payload)
+        validate_inventory_payload(conn, payload, item_id=item_id)
         item = conn.execute(
             "SELECT * FROM inventory_items WHERE id=?",
             (item_id,),
@@ -3800,7 +4292,7 @@ def update_inventory_item(item_id: int, payload: InventoryItemIn):
             conn.execute(
                 """UPDATE inventory_items SET name=?,category=?,area_id=?,unit=?,
                    purchase_quantity=?,stock_status=?,shopping_requested=?,notes=?,
-                   updated_at=? WHERE id=?""",
+                   gastos_product_id=?,updated_at=? WHERE id=?""",
                 (
                     name,
                     payload.category.strip() or "General",
@@ -3810,6 +4302,7 @@ def update_inventory_item(item_id: int, payload: InventoryItemIn):
                     payload.stock_status,
                     1 if payload.shopping_requested else 0,
                     payload.notes.strip(),
+                    payload.gastos_product_id,
                     iso_now(),
                     item_id,
                 ),
@@ -3908,6 +4401,132 @@ def restore_inventory_item(item_id: int):
             (iso_now(), item_id),
         )
         return {"ok": True}
+
+
+@app.put("/api/inventory/{item_id}/gastos-product/{product_id}")
+def link_inventory_to_gastos_product(item_id: int, product_id: int):
+    product = gastos_proxy_call(f"/api/v1/products/{product_id}")
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=? AND active=1",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto de inventario no encontrado")
+        other = conn.execute(
+            """SELECT id,name FROM inventory_items
+               WHERE gastos_product_id=? AND id<>? AND active=1""",
+            (product_id, item_id),
+        ).fetchone()
+        if other:
+            raise HTTPException(
+                409,
+                f'Este producto de Gastos ya está vinculado a "{other["name"]}"',
+            )
+        conn.execute(
+            "UPDATE inventory_items SET gastos_product_id=?,updated_at=? WHERE id=?",
+            (product_id, iso_now(), item_id),
+        )
+        log_activity(
+            conn,
+            "inventory_gastos_linked",
+            f'Vinculado "{item["name"]}" con Gastos: {product.get("name", product_id)}',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+    return {"ok": True, "product": product}
+
+
+@app.delete("/api/inventory/{item_id}/gastos-product")
+def unlink_inventory_from_gastos_product(item_id: int):
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=? AND active=1",
+            (item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto de inventario no encontrado")
+        conn.execute(
+            "UPDATE inventory_items SET gastos_product_id=NULL,updated_at=? WHERE id=?",
+            (iso_now(), item_id),
+        )
+        log_activity(
+            conn,
+            "inventory_gastos_unlinked",
+            f'Desvinculado "{item["name"]}" de Gastos',
+            entity_type="inventory",
+            entity_id=item_id,
+        )
+    return {"ok": True}
+
+
+@app.post("/api/admin/reset-casa")
+def reset_casa_database(payload: ResetIn):
+    if payload.confirmation != "BORRAR TAREAS":
+        raise HTTPException(400, "Confirmación incorrecta")
+    with db() as conn:
+        attachment_rows = conn.execute("SELECT * FROM attachments").fetchall()
+        for row in attachment_rows:
+            delete_attachment_file(row)
+
+        for table in (
+            "task_supplies",
+            "today_queue",
+            "schedule_overrides",
+            "completions",
+            "event_alert_ack",
+            "notification_deliveries",
+            "calendar_external_events",
+            "calendar_subscriptions",
+            "attachments",
+            "events",
+            "inventory_items",
+            "tasks",
+            "areas",
+            "people",
+            "undo_actions",
+            "activity_log",
+            "telegram_pending_actions",
+        ):
+            conn.execute(f"DELETE FROM {table}")
+
+        conn.execute(
+            """DELETE FROM sqlite_sequence WHERE name IN (
+               'people','areas','tasks','events','telegram_pending_actions',
+               'completions','schedule_overrides','undo_actions','activity_log',
+               'attachments','calendar_subscriptions','calendar_external_events',
+               'inventory_items'
+            )"""
+        )
+        set_meta(conn, "sample_data_disabled", "1")
+        delete_meta(conn, "shopping_task_id")
+        delete_meta(conn, "vacation_state")
+    return {"ok": True}
+
+
+@app.post("/api/gastos/admin/reset")
+def reset_gastos_database(payload: ResetIn):
+    if payload.confirmation != "BORRAR GASTOS":
+        raise HTTPException(400, "Confirmación incorrecta")
+    result = gastos_proxy_call(
+        "/api/v1/admin/reset",
+        method="POST",
+        payload={"confirmation": "BORRAR GASTOS"},
+    )
+    with db() as conn:
+        conn.execute(
+            """UPDATE inventory_items
+               SET gastos_product_id=NULL,last_purchased_at=NULL,
+                   last_purchase_ticket_id=NULL,updated_at=?""",
+            (iso_now(),),
+        )
+        log_activity(
+            conn,
+            "gastos_reset",
+            "Base de Gastos vaciada; vínculos de inventario eliminados",
+            entity_type="settings",
+        )
+    return result
 
 
 @app.post("/api/vacation/start")

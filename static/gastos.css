@@ -1,0 +1,67 @@
+.gastos-shell{display:grid;gap:16px}
+.gastos-subnav{display:flex;gap:7px;flex-wrap:wrap;margin:-6px 0 4px}
+.gastos-subnav button{border:1px solid var(--line);background:#fff;color:#62738a;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:850;cursor:pointer}
+.gastos-subnav button.active{background:#eef4ff;color:var(--primary);border-color:#bfd2f5}
+.gastos-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.gastos-metric{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;display:grid;gap:8px}
+.gastos-metric-label{font-size:12px;color:var(--muted);font-weight:800}
+.gastos-metric-value{font-size:25px;font-weight:950}
+.gastos-user-values{display:flex;gap:6px;flex-wrap:wrap}
+.gastos-user-values span{font-size:10px;font-weight:800;color:#60728a;background:#f5f8fc;border-radius:999px;padding:4px 7px}
+.gastos-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr);gap:14px}
+.gastos-panel{background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:0 4px 14px rgba(30,48,77,.035)}
+.gastos-panel h2,.gastos-panel h3{margin:0}
+.gastos-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:13px}
+.gastos-panel-head p{margin:4px 0 0;color:var(--muted);font-size:12px}
+.gastos-ticket-list{display:grid;gap:9px}
+.gastos-ticket{border:1px solid var(--line);border-radius:14px;background:#fbfcff;padding:12px;display:grid;gap:9px}
+.gastos-ticket-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.gastos-ticket-title{font-weight:950}.gastos-ticket-meta{font-size:12px;color:var(--muted);margin-top:2px}
+.gastos-ticket-total{font-size:17px;font-weight:950;white-space:nowrap}
+.gastos-ticket-items{display:grid;gap:4px;font-size:12px;color:#52647b}
+.gastos-ticket-actions{display:flex;gap:7px;flex-wrap:wrap}
+.gastos-chart-wrap{width:100%;overflow-x:auto}
+.gastos-chart{width:100%;min-width:620px;height:280px;display:block}
+.gastos-chart-grid{stroke:#e7ecf2;stroke-width:1}
+.gastos-chart-axis{fill:#74849a;font-size:10px;font-weight:700}
+.gastos-chart-line{fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+.gastos-chart-dot{stroke:#fff;stroke-width:2}
+.gastos-chart-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:#5e6f85}
+.gastos-chart-key{display:inline-flex;align-items:center;gap:5px}.gastos-chart-key i{display:block;width:10px;height:10px;border-radius:50%}
+.gastos-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.gastos-filters .field{min-width:0}
+.gastos-results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.gastos-result{border:1px solid var(--line);border-radius:14px;padding:13px;background:#f9fbfe}
+.gastos-result span{display:block;font-size:11px;color:var(--muted);font-weight:800}.gastos-result strong{display:block;font-size:22px;margin-top:5px}
+.gastos-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px}
+.gastos-table{width:100%;border-collapse:collapse;min-width:760px;background:#fff}
+.gastos-table th,.gastos-table td{padding:10px 11px;border-bottom:1px solid #edf1f5;text-align:left;font-size:12px}
+.gastos-table th{background:#f7f9fc;color:#53657c;font-size:11px;text-transform:uppercase;letter-spacing:.025em}
+.gastos-table tfoot th{background:#fbfcfe;color:var(--text);font-size:12px;text-transform:none}
+.gastos-products{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.gastos-product{border:1px solid var(--line);border-radius:14px;padding:13px;background:#fff;cursor:pointer;display:grid;gap:7px}
+.gastos-product:hover{border-color:#bfd2f5;box-shadow:0 5px 16px rgba(36,107,254,.08)}
+.gastos-product strong{font-size:14px}.gastos-product-meta{font-size:11px;color:var(--muted)}
+.gastos-product-last{font-size:12px;color:#52657c}
+.gastos-lookup-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.gastos-lookup{border:1px solid var(--line);border-radius:15px;background:#fff;padding:14px;display:grid;gap:10px}
+.gastos-lookup select{width:100%;border:1px solid #cfd8e5;border-radius:12px;padding:10px 11px;background:#fff}
+.gastos-empty{border:1px dashed #cfd8e5;border-radius:15px;padding:30px;text-align:center;color:var(--muted);background:#fbfcff}
+.gastos-loading{display:grid;place-items:center;min-height:260px;color:var(--muted);font-weight:800}
+.gastos-error{border:1px solid #e9c9c9;background:#fff6f6;color:#8c4349;border-radius:16px;padding:14px;line-height:1.45}
+.gastos-ticket-modal{width:min(96vw,980px)}
+.gastos-ticket-form{display:grid;gap:14px}
+.gastos-ticket-basic{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.gastos-items{display:grid;gap:9px}
+.gastos-item-row{border:1px solid var(--line);border-radius:14px;background:#fbfcff;padding:11px;display:grid;grid-template-columns:minmax(160px,2fr) repeat(6,minmax(80px,1fr)) minmax(120px,1.15fr) auto;gap:7px;align-items:end}
+.gastos-item-row .field label{font-size:10px}.gastos-item-row .field input{width:100%;padding:8px 9px;font-size:12px}
+.gastos-line-total{font-weight:900;white-space:nowrap;padding:8px 3px}
+.gastos-ticket-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-radius:14px;background:#eef4ff;color:#245fcf}
+.gastos-ticket-summary strong{font-size:22px}
+.gastos-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.gastos-toolbar .search{min-width:240px}
+.gastos-product-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:12px}
+.gastos-product-stat{background:#f7f9fc;border:1px solid var(--line);border-radius:13px;padding:11px}
+.gastos-product-stat span{display:block;font-size:10px;color:var(--muted);font-weight:800}.gastos-product-stat strong{display:block;margin-top:4px;font-size:17px}
+@media(max-width:1000px){.gastos-grid{grid-template-columns:1fr}.gastos-metrics{grid-template-columns:repeat(2,1fr)}.gastos-item-row{grid-template-columns:repeat(4,minmax(0,1fr))}.gastos-item-row .article{grid-column:span 2}.gastos-item-row .remove{grid-column:span 1}}
+@media(max-width:760px){.gastos-shell{padding:0 14px}.gastos-subnav{overflow-x:auto;flex-wrap:nowrap;padding-bottom:3px}.gastos-subnav button{white-space:nowrap}.gastos-metrics{grid-template-columns:1fr 1fr}.gastos-grid{grid-template-columns:1fr}.gastos-filters{grid-template-columns:1fr}.gastos-results{grid-template-columns:1fr}.gastos-lookup-grid{grid-template-columns:1fr}.gastos-products{grid-template-columns:1fr}.gastos-ticket-basic{grid-template-columns:1fr}.gastos-item-row{grid-template-columns:1fr 1fr}.gastos-item-row .article{grid-column:1/-1}.gastos-item-row .user{grid-column:1/-1}.gastos-item-row .remove{grid-column:1/-1}.gastos-product-stats{grid-template-columns:1fr 1fr}.gastos-panel{padding:13px}.gastos-metric-value{font-size:21px}}
