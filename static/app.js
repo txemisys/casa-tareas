@@ -127,6 +127,7 @@ h+='<section class="settings-card wide"><h2>⚙️ Funcionamiento</h2><form id="
 h+='<section class="settings-card wide"><div class="settings-status"><div><h2>🛒 Gastos de comida</h2><div class="muted">Conecta Casa Tareas con el histórico de compras mediante la API interna.</div></div><span class="telegram-status '+(gastos.configured?"ok":"warn")+'">'+(gastos.configured?"● Configurado":"Sin configurar")+'</span></div><form id="gastosIntegrationForm" class="runtime-form"><div class="field full"><label>URL del servicio</label><input name="url" value="'+esc(gastos.url||"")+'" placeholder="http://gastos-comida:8000"></div></form><div class="settings-actions"><button class="primary" onclick="saveGastosIntegration()">Guardar</button>'+(gastos.configured?'<button class="secondary" onclick="testGastosIntegration()">Probar conexión</button><button class="ghost" onclick="clearGastosIntegration()">Desconectar</button>':'')+'</div><div class="settings-kv">'+(gastos.last_ok_at?'<div>Última prueba correcta</div><div>'+esc(formatLastContact(gastos.last_ok_at))+'</div>':'')+(gastos.last_error?'<div>Último error</div><div>'+esc(gastos.last_error)+'</div>':'')+'</div><div class="settings-note">En el despliegue conjunto la URL interna es <code>http://gastos-comida:8000</code>. El servicio está protegido para no arrancar con una base vacía: antes de activarlo hay que apuntar <code>GASTOS_DATA_DIR</code> a la carpeta que contiene tu <code>gastos.db</code> real.</div></section>';
 h+='<section class="settings-card"><h2>🩺 Diagnóstico</h2><div class="settings-kv"><div>Versión</div><div>'+esc(s.version||"—")+'</div><div>Calendarios externos</div><div>'+esc(cal.subscription_count||0)+'</div><div>Documentos</div><div>'+esc(att.count||0)+'</div><div>Datos persistentes</div><div>'+esc(s.data_path||"data/")+'</div></div></section>';
 h+='<section class="settings-card"><h2>🔒 Acceso</h2><div class="settings-warning">Casa Tareas no tiene autenticación de usuarios. Mantén la aplicación en una red privada de confianza, especialmente ahora que puede guardar un token de Telegram.</div></section>';
+h+='<section class="settings-card wide"><h2>⚠️ Zona peligrosa</h2><div class="settings-warning">Estas acciones borran datos de forma permanente y no se pueden deshacer. Casa Tareas y Gastos se reinician por separado.</div><div class="settings-actions"><button class="danger" onclick="openDatabaseResetConfirm(\'casa\')">Borrar datos de Casa Tareas</button><button class="danger" onclick="openDatabaseResetConfirm(\'gastos\')">Borrar datos de Gastos</button></div><div class="settings-note"><strong>Casa Tareas:</strong> elimina tareas, áreas, personas, agenda, inventario, historial y adjuntos, pero conserva la configuración de la aplicación. <strong>Gastos:</strong> elimina tickets, líneas, productos y listas auxiliares, sin tocar Casa Tareas.</div></section>';
 h+='</div>';document.getElementById("main").innerHTML=h}
 async function saveTelegramTokenSetting(){var input=document.getElementById("telegramTokenSetting");var token=input?input.value.trim():"";if(!token){alert("Pega primero el token que te dio BotFather.");return}try{var r=await api("/api/settings/telegram-token",{method:"PUT",body:JSON.stringify({token:token})});if(input)input.value="";await load();view="settings";renderSettings();showUndo("Telegram configurado"+(r.telegram&&r.telegram.bot_username?" · @"+r.telegram.bot_username:""),null)}catch(e){alert(e.message)}}
 async function deleteTelegramTokenSetting(){if(!confirm("¿Eliminar el token guardado en Casa Tareas? También se olvidará el grupo conectado y habrá que detectarlo de nuevo."))return;try{await api("/api/settings/telegram-token",{method:"DELETE"});await load();view="settings";renderSettings()}catch(e){alert(e.message)}}
@@ -134,6 +135,30 @@ async function saveRuntimeSettings(){var form=document.getElementById("runtimeSe
 async function saveGastosIntegration(){var form=document.getElementById("gastosIntegrationForm");var f=new FormData(form);var url=String(f.get("url")||"").trim();try{await api("/api/settings/gastos-comida",{method:"PUT",body:JSON.stringify({url:url})});await load();view="settings";renderSettings();showUndo(url?"Integración de Gastos guardada":"Integración de Gastos desconectada",null)}catch(e){alert(e.message)}}
 async function clearGastosIntegration(){var form=document.getElementById("gastosIntegrationForm");if(form){var input=form.querySelector('[name="url"]');if(input)input.value=""}await saveGastosIntegration()}
 async function testGastosIntegration(){try{var r=await api("/api/integrations/gastos-comida/test",{method:"POST"});await load();view="settings";renderSettings();var h=r.health||{};showUndo("Conexión correcta · "+(h.products||0)+" productos · "+(h.tickets||0)+" tickets",null)}catch(e){await load();view="settings";renderSettings();alert(e.message)}}
+
+function openDatabaseResetConfirm(kind){
+  var isGastos=kind==="gastos";
+  var title=isGastos?"Borrar base de Gastos":"Borrar datos de Casa Tareas";
+  var body=isGastos
+    ?"Se eliminarán definitivamente todos los tickets, artículos, productos y datos históricos de Gastos. Casa Tareas no se borrará."
+    :"Se eliminarán definitivamente tareas, áreas, personas, agenda, inventario, historial y adjuntos. La configuración general se conservará y los ejemplos no volverán a crearse.";
+  var html='<div class="modalhead"><div><h2>⚠️ '+esc(title)+'</h2><div class="muted">Esta acción no se puede deshacer.</div></div><button class="ghost" onclick="closeModal()">×</button></div><div class="settings-warning" style="margin-top:12px">'+esc(body)+'</div><div class="modalfoot"><button class="ghost" onclick="closeModal()">No, cancelar</button><button class="danger" onclick="confirmDatabaseReset(\''+kind+'\')">Sí, borrar</button></div>';
+  showModal(html);
+}
+async function confirmDatabaseReset(kind){
+  var isGastos=kind==="gastos";
+  var url=isGastos?"/api/gastos/admin/reset":"/api/admin/reset-casa";
+  var confirmation=isGastos?"BORRAR GASTOS":"BORRAR TAREAS";
+  try{
+    await api(url,{method:"POST",body:JSON.stringify({confirmation:confirmation})});
+    closeModal();
+    gastosDashboard=null;gastosTickets=[];gastosProducts=[];
+    await load();
+    view=isGastos?"gastos":"board";
+    render();
+    showUndo(isGastos?"Gastos se ha reiniciado desde cero":"Casa Tareas se ha reiniciado desde cero",null);
+  }catch(e){alert(e.message)}
+}
 
 function renderHistory(){var h='<div class="pagehead"><div><h1>Historial</h1><div class="subtitle">Realizaciones y reparto de los últimos 30 días.</div></div></div><div class="stats">'+state.stats.map(function(s){return '<div class="stat"><div class="avatar" style="background:'+esc(s.color)+'">'+esc(s.icon)+'</div><div class="count">'+s.count+'</div><div>'+esc(s.name)+'</div><div class="muted">tareas · 30 días</div></div>'}).join("")+"</div>";h+='<div class="history">'+(state.history.length?state.history.map(function(x){return '<div class="hist"><div class="icon">'+esc(x.icon)+'</div><div><div class="title">'+esc(x.title)+'</div><div class="muted">'+new Date(x.completed_at).toLocaleString("es")+'</div></div><div class="avatar" style="background:'+esc(x.color)+'">'+esc(x.person_icon)+'</div></div>'}).join(""):'<div class="empty">Todavía no hay realizaciones.</div>')+"</div>";document.getElementById("main").innerHTML=h}
 function showModal(html){document.getElementById("modal").innerHTML=html;document.getElementById("modal").classList.remove("hidden");document.getElementById("modalback").classList.remove("hidden")}
