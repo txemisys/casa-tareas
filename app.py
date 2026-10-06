@@ -3442,6 +3442,10 @@ def gastos_shopping_plan():
             "recommended_supermarket": None,
             "habitual_supermarket": None,
             "average_unit_price": None,
+            "recommended_unit_price": None,
+            "habitual_unit_price": None,
+            "estimated_saving_unit": None,
+            "estimated_saving_percent": None,
             "last_purchase": None,
             "pricing_available": False,
         }
@@ -3458,6 +3462,33 @@ def gastos_shopping_plan():
                 plan_item["pricing_available"] = bool(
                     recommended or stats.get("last_purchase")
                 )
+
+                recommended_price = (
+                    recommended.get("average_unit_price")
+                    if isinstance(recommended, dict)
+                    else None
+                )
+                habitual_price = (
+                    habitual.get("average_unit_price")
+                    if isinstance(habitual, dict)
+                    else None
+                )
+                plan_item["recommended_unit_price"] = recommended_price
+                plan_item["habitual_unit_price"] = habitual_price
+                if (
+                    recommended_price is not None
+                    and habitual_price is not None
+                    and float(habitual_price) > 0
+                ):
+                    saving = max(
+                        0.0,
+                        float(habitual_price) - float(recommended_price),
+                    )
+                    plan_item["estimated_saving_unit"] = round(saving, 2)
+                    plan_item["estimated_saving_percent"] = round(
+                        (saving / float(habitual_price)) * 100,
+                        1,
+                    )
             except HTTPException:
                 pass
 
@@ -3469,27 +3500,47 @@ def gastos_shopping_plan():
         items.append(plan_item)
 
     ordered_groups = []
+    total_saving = 0.0
+    total_savings_count = 0
     for supermarket in sorted(
         groups,
         key=lambda value: (value == "Sin recomendación", value.casefold()),
     ):
         group_items = groups[supermarket]
         estimated_total = 0.0
+        baseline_total = 0.0
+        group_saving = 0.0
         priced_count = 0
+        comparable_count = 0
+        savings_count = 0
         for item in group_items:
-            price = (item.get("recommended_supermarket") or {}).get(
-                "average_unit_price"
-            )
+            price = item.get("recommended_unit_price")
             if price is not None:
                 estimated_total += float(price)
                 priced_count += 1
+
+            habitual_price = item.get("habitual_unit_price")
+            saving = item.get("estimated_saving_unit")
+            if habitual_price is not None and saving is not None:
+                baseline_total += float(habitual_price)
+                comparable_count += 1
+                group_saving += float(saving)
+                if float(saving) > 0:
+                    savings_count += 1
+
+        total_saving += group_saving
+        total_savings_count += savings_count
         ordered_groups.append(
             {
                 "supermarket": supermarket,
                 "items": group_items,
                 "count": len(group_items),
                 "estimated_unit_total": round(estimated_total, 2),
+                "estimated_baseline_unit_total": round(baseline_total, 2),
+                "estimated_saving_unit_total": round(group_saving, 2),
                 "priced_count": priced_count,
+                "comparable_count": comparable_count,
+                "savings_count": savings_count,
             }
         )
 
@@ -3503,6 +3554,8 @@ def gastos_shopping_plan():
         "recommended_count": sum(
             1 for item in items if item.get("recommended_supermarket")
         ),
+        "estimated_saving_unit_total": round(total_saving, 2),
+        "savings_count": total_savings_count,
     }
 
 
