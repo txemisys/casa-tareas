@@ -111,6 +111,7 @@ function shoppingRecommendationMeta(item){
   var rec=p.recommended_supermarket,last=p.last_purchase;
   var bits=[];
   if(rec&&rec.supermarket)bits.push("💡 "+rec.supermarket+(rec.average_unit_price!=null?" · "+(typeof gastosMoney==="function"?gastosMoney(rec.average_unit_price):Number(rec.average_unit_price).toFixed(2)+" €")+"/u":""));
+  if(p.estimated_saving_unit>0)bits.push("Ahorro aprox. "+(typeof gastosMoney==="function"?gastosMoney(p.estimated_saving_unit):Number(p.estimated_saving_unit).toFixed(2)+" €")+"/u"+(p.estimated_saving_percent!=null?" ("+Number(p.estimated_saving_percent).toFixed(1)+"%)":""));
   if(last&&last.supermarket)bits.push("Última: "+last.supermarket+(last.unit_price!=null?" · "+(typeof gastosMoney==="function"?gastosMoney(last.unit_price):Number(last.unit_price).toFixed(2)+" €")+"/u":""));
   return bits.length?'<div class="shopping-required">'+bits.map(function(x){return esc(x)}).join(" · ")+'</div>':"";
 }
@@ -118,9 +119,12 @@ function shoppingPlanPanel(){
   if(!(state.shopping_list||[]).length)return"";
   if(!shoppingPlanLoaded)return'<section class="inventory-panel"><div class="section">🧭 Plan de compra</div><div class="empty">'+(shoppingPlanLoading?"Calculando supermercados…":"Cargando recomendaciones…")+'</div></section>';
   if(!shoppingPlan||!(shoppingPlan.groups||[]).length)return"";
-  return '<section class="inventory-panel"><div class="section">🧭 Plan de compra por supermercado</div><div class="inventory-list">'+shoppingPlan.groups.map(function(g){
+  var totalSaving=Number(shoppingPlan.estimated_saving_unit_total||0);
+  var savingSummary=totalSaving>0?'<div class="shopping-required"><strong>Ahorro estimado siguiendo las recomendaciones: '+esc(typeof gastosMoney==="function"?gastosMoney(totalSaving):totalSaving.toFixed(2)+" €")+'/u.</strong> Basado en el precio medio del supermercado habitual; no es todavía un total real de cesta.</div>':"";
+  return '<section class="inventory-panel"><div class="section">🧭 Plan de compra por supermercado</div>'+savingSummary+'<div class="inventory-list">'+shoppingPlan.groups.map(function(g){
     var est=typeof gastosMoney==="function"?gastosMoney(g.estimated_unit_total):Number(g.estimated_unit_total).toFixed(2)+" €";
-    return '<div class="shopping-card"><div><strong>'+esc(g.supermarket)+'</strong><span class="pill">'+g.count+' producto'+(g.count===1?"":"s")+'</span>'+(g.priced_count?'<span class="pill">≈ '+esc(est)+' base/u.</span>':"")+'</div><div class="shopping-required">'+g.items.map(function(x){return esc(x.name)+(x.purchase_quantity?' · '+esc(x.purchase_quantity):"")}).join("<br>")+'</div></div>';
+    var save=typeof gastosMoney==="function"?gastosMoney(g.estimated_saving_unit_total||0):Number(g.estimated_saving_unit_total||0).toFixed(2)+" €";
+    return '<div class="shopping-card"><div><strong>'+esc(g.supermarket)+'</strong><span class="pill">'+g.count+' producto'+(g.count===1?"":"s")+'</span>'+(g.priced_count?'<span class="pill">≈ '+esc(est)+' base/u.</span>':"")+(Number(g.estimated_saving_unit_total||0)>0?'<span class="pill">Ahorro ≈ '+esc(save)+'/u.</span>':"")+'</div><div class="shopping-required">'+g.items.map(function(x){var saving=Number(x.estimated_saving_unit||0);return esc(x.name)+(x.purchase_quantity?' · '+esc(x.purchase_quantity):"")+(saving>0?' · ahorra aprox. '+esc(typeof gastosMoney==="function"?gastosMoney(saving):saving.toFixed(2)+" €")+'/u.':"")}).join("<br>")+'</div></div>';
   }).join("")+'</div></section>';
 }
 async function loadShoppingPlan(force){
