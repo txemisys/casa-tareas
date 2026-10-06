@@ -327,3 +327,40 @@ def test_admin_reset_requires_confirmation_and_clears_gastos(tmp_path):
     assert health["tickets"] == 0
     assert health["items"] == 0
     assert health["products"] == 0
+
+
+def test_product_stats_include_price_and_supermarket_recommendations(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    assert client.post(
+        "/tickets",
+        data=ticket_form(article="Café 500 g", supermarket="Coop", purchase_date="2026-09-01")
+        | {"quantity[]": ["1"], "price[]": ["10.00"]},
+    ).status_code == 302
+    assert client.post(
+        "/tickets",
+        data=ticket_form(article="Café 500 g", supermarket="Migros", purchase_date="2026-09-10")
+        | {"quantity[]": ["1"], "price[]": ["8.00"]},
+    ).status_code == 302
+    assert client.post(
+        "/tickets",
+        data=ticket_form(article="Café 500 g", supermarket="Migros", purchase_date="2026-10-01")
+        | {"quantity[]": ["1"], "price[]": ["9.00"]},
+    ).status_code == 302
+
+    product = client.get("/api/v1/products?q=caf").json["items"][0]
+    stats = client.get(f"/api/v1/products/{product['id']}/stats")
+    assert stats.status_code == 200
+    data = stats.json
+
+    assert data["purchase_count"] == 3
+    assert data["lowest_unit_price"] == 8.0
+    assert data["highest_unit_price"] == 10.0
+    assert data["average_unit_price"] == 9.0
+    assert data["last_purchase"]["unit_price"] == 9.0
+    assert data["price_change_percent"] == 12.5
+    assert data["recommended_supermarket"]["supermarket"] == "Migros"
+    assert data["recommended_supermarket"]["average_unit_price"] == 8.5
+    assert data["habitual_supermarket"]["supermarket"] == "Migros"
+    assert data["habitual_supermarket"]["purchase_count"] == 2
