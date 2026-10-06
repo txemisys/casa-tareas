@@ -2975,3 +2975,100 @@ def test_home_summary_combines_current_and_previous_month_spending(client, monke
     assert data["current_month"]["total"] == 120.0
     assert data["previous_month"]["total"] == 100.0
     assert data["change_percent"] == 20.0
+
+
+def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monkeypatch):
+    import app as app_module
+
+    first = client.post(
+        "/api/inventory",
+        json={
+            "name": "Leche",
+            "category": "Alimentación",
+            "stock_status": "out",
+            "gastos_product_id": 10,
+        },
+    )
+    second = client.post(
+        "/api/inventory",
+        json={
+            "name": "Café",
+            "category": "Alimentación",
+            "stock_status": "low",
+            "gastos_product_id": 20,
+        },
+    )
+    third = client.post(
+        "/api/inventory",
+        json={
+            "name": "Papel",
+            "category": "Hogar",
+            "stock_status": "out",
+        },
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 200
+
+    def fake_proxy(path, method="GET", payload=None):
+        assert method == "GET"
+        if path.endswith("/10/stats"):
+            return {
+                "recommended_supermarket": {
+                    "supermarket": "Migros",
+                    "average_unit_price": 1.8,
+                },
+                "habitual_supermarket": {"supermarket": "Coop", "purchase_count": 4},
+                "average_unit_price": 1.9,
+                "last_purchase": {
+                    "date": "2026-10-01",
+                    "supermarket": "Coop",
+                    "unit_price": 2.0,
+                },
+            }
+        if path.endswith("/20/stats"):
+            return {
+                "recommended_supermarket": {
+                    "supermarket": "Migros",
+                    "average_unit_price": 7.5,
+                },
+                "habitual_supermarket": {"supermarket": "Migros", "purchase_count": 3},
+                "average_unit_price": 7.8,
+                "last_purchase": {
+                    "date": "2026-09-20",
+                    "supermarket": "Migros",
+                    "unit_price": 7.6,
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(app_module, "gastos_proxy_call", fake_proxy)
+
+    response = client.get("/api/gastos/shopping-plan")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 3
+    assert data["linked_count"] == 2
+    assert data["recommended_count"] == 2
+    assert [group["supermarket"] for group in data["groups"]] == [
+        "Migros",
+        "Sin recomendación",
+    ]
+    migros = data["groups"][0]
+    assert migros["count"] == 2
+    assert migros["priced_count"] == 2
+    assert migros["estimated_unit_total"] == 9.3
+    assert {item["name"] for item in migros["items"]} == {"Leche", "Café"}
+
+
+def test_shopping_task_is_identified_for_supermarket_plan_display(client):
+    item = client.post(
+        "/api/inventory",
+        json={"name": "Arroz", "category": "Alimentación", "stock_status": "out"},
+    )
+    assert item.status_code == 200
+
+    state = client.get("/api/state").json()
+    shopping_tasks = [t for t in state["tasks"] if t.get("is_shopping_task")]
+    assert len(shopping_tasks) == 1
+    assert shopping_tasks[0]["title"] == "Hacer la compra"
