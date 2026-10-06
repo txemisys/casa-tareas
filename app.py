@@ -3418,6 +3418,36 @@ def gastos_proxy_call(path, method="GET", payload=None):
             raise HTTPException(502, str(exc))
 
 
+@app.get("/api/gastos/home-summary")
+def gastos_home_summary():
+    today = today_local()
+    current_start = today.replace(day=1)
+    previous_end = current_start - timedelta(days=1)
+    previous_start = previous_end.replace(day=1)
+
+    current_query = urllib.parse.urlencode(
+        {"from": current_start.isoformat(), "to": today.isoformat()}
+    )
+    previous_query = urllib.parse.urlencode(
+        {"from": previous_start.isoformat(), "to": previous_end.isoformat()}
+    )
+    current = gastos_proxy_call("/api/v1/spending/summary?" + current_query)
+    previous = gastos_proxy_call("/api/v1/spending/summary?" + previous_query)
+    current_total = float(current.get("total") or 0.0)
+    previous_total = float(previous.get("total") or 0.0)
+    change_percent = None
+    if previous_total:
+        change_percent = round(
+            ((current_total - previous_total) / previous_total) * 100,
+            1,
+        )
+    return {
+        "current_month": current,
+        "previous_month": previous,
+        "change_percent": change_percent,
+    }
+
+
 @app.get("/api/gastos/dashboard")
 def gastos_dashboard(
     article: str = "",
