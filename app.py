@@ -733,6 +733,16 @@ def task_need(conn, task):
     else:
         label = "Pendiente"
 
+    if conn.execute(
+        """SELECT 1
+           FROM task_supplies s
+           JOIN inventory_items i ON i.id=s.item_id
+           WHERE s.task_id=? AND i.active=1 AND i.stock_status='out'
+           LIMIT 1""",
+        (task["id"],),
+    ).fetchone():
+        label = "Bloqueada por material"
+
     return {
         "score": score,
         "label": label,
@@ -2896,6 +2906,11 @@ def task_json(conn, task):
     ]
     d["shopping_supplies"] = [
         item for item in d["supplies"] if item["needs_purchase"]
+    ]
+    d["blocked_by_supplies"] = bool(d["missing_supplies"])
+    d["blocking_supplies"] = [
+        {"id": item["id"], "name": item["name"]}
+        for item in d["missing_supplies"]
     ]
 
     last = last_completion(conn, task["id"])
