@@ -66,7 +66,22 @@ function gastosTicketCard(ticket,compact){
 }
 function renderGastosSummary(){
   var d=gastosDashboard,f=d.filters||{},recent=d.recent_tickets||[],counts=d.counts||{},shopping=state.shopping_list||[];
-  var shoppingPanel='<section class="gastos-panel"><div class="gastos-panel-head"><div><h2>🧺 Por comprar</h2><p>Productos marcados desde el inventario de Casa Tareas.</p></div><button class="secondary" onclick="taskSection=\'inventory\';go(\'tasks\')">Abrir inventario</button></div>'+(shopping.length?'<div class="gastos-ticket-list">'+shopping.map(function(item){return'<article class="gastos-ticket"><div class="gastos-ticket-top"><div><div class="gastos-ticket-title">'+esc(item.name)+'</div><div class="gastos-ticket-meta">'+esc(item.purchase_quantity||item.category||"")+(item.gastos_linked?' · vinculado con Gastos':' · sin vincular')+'</div></div><span class="status '+(item.gastos_linked?'':'off')+'">'+(item.gastos_linked?'Automático':'Manual')+'</span></div></article>'}).join("")+'</div>':'<div class="gastos-empty">La lista de compra está vacía.</div>')+'</section>';
+  if(shopping.length&&typeof loadShoppingPlan==="function")loadShoppingPlan(false);
+  var planGroups=(shoppingPlan&&shoppingPlan.groups)||[];
+  var shoppingBody="";
+  if(!shopping.length){
+    shoppingBody='<div class="gastos-empty">La lista de compra está vacía.</div>';
+  }else if(planGroups.length){
+    shoppingBody='<div class="gastos-ticket-list">'+planGroups.map(function(group){
+      return '<article class="gastos-ticket"><div class="gastos-ticket-top"><div><div class="gastos-ticket-title">🛒 '+esc(group.supermarket)+'</div><div class="gastos-ticket-meta">'+group.count+' producto'+(group.count===1?"":"s")+(group.priced_count?' · aprox. '+esc(gastosMoney(group.estimated_unit_total))+' base/u.':'')+'</div></div></div><div class="gastos-ticket-items">'+group.items.map(function(item){
+        var rec=item.recommended_supermarket,last=item.last_purchase;
+        return '<div class="gastos-ticket-item"><div><strong>'+esc(item.name)+'</strong><div class="muted">'+esc(item.purchase_quantity||item.category||"")+(item.gastos_product_id?' · vinculado':' · sin vincular')+'</div></div><div class="muted">'+(rec&&rec.average_unit_price!=null?'Media '+esc(gastosMoney(rec.average_unit_price))+'/u.':(last&&last.unit_price!=null?'Último '+esc(gastosMoney(last.unit_price))+'/u.':'Sin precio histórico'))+'</div></div>';
+      }).join("")+'</div></article>';
+    }).join("")+'</div>';
+  }else{
+    shoppingBody='<div class="gastos-ticket-list">'+shopping.map(function(item){return'<article class="gastos-ticket"><div class="gastos-ticket-top"><div><div class="gastos-ticket-title">'+esc(item.name)+'</div><div class="gastos-ticket-meta">'+esc(item.purchase_quantity||item.category||"")+(item.gastos_linked?' · vinculado con Gastos':' · sin vincular')+'</div></div><span class="status '+(item.gastos_linked?'':'off')+'">'+(item.gastos_linked?'Automático':'Manual')+'</span></div></article>'}).join("")+'</div>';
+  }
+  var shoppingPanel='<section class="gastos-panel"><div class="gastos-panel-head"><div><h2>🧺 Por comprar</h2><p>Productos de Casa Tareas agrupados por supermercado recomendado cuando hay histórico suficiente.</p></div><button class="secondary" onclick="taskSection=\'inventory\';go(\'tasks\')">Abrir inventario</button></div>'+shoppingBody+'</section>';
   return renderGastosMetrics()+'<div class="gastos-grid"><section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Evolución anual</h2><p>Total mensual y desglose por usuario.</p></div><select onchange="gastosChangeYear(this.value)">'+(d.years||[]).map(function(y){return'<option value="'+y+'" '+(Number(f.chart_year)===Number(y)?"selected":"")+'>'+y+'</option>'}).join("")+'</select></div>'+gastosChart(f.chart_labels||[],f.chart_datasets||[])+'</section><section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Estado</h2><p>Datos disponibles en Gastos.</p></div></div><div class="gastos-product-stats"><div class="gastos-product-stat"><span>Tickets</span><strong>'+Number(counts.tickets||0)+'</strong></div><div class="gastos-product-stat"><span>Productos</span><strong>'+Number(counts.products||0)+'</strong></div><div class="gastos-product-stat"><span>Líneas</span><strong>'+Number(counts.items||0)+'</strong></div><div class="gastos-product-stat"><span>Por comprar</span><strong>'+shopping.length+'</strong></div></div></section></div>'+shoppingPanel+'<section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Últimos tickets</h2><p>Las compras más recientes.</p></div><button class="secondary" onclick="gastosGo(\'tickets\')">Ver todos</button></div><div class="gastos-ticket-list">'+(recent.length?recent.map(function(t){return gastosTicketCard(t,true)}).join(""):'<div class="gastos-empty">Todavía no hay tickets.</div>')+"</div></section>";
 }
 function gastosChangeYear(value){gastosFilters.chart_year=Number(value)||new Date().getFullYear();loadGastosDashboard().catch(function(e){alert(e.message)})}
@@ -150,7 +165,7 @@ async function addGastosProductToInventory(productId){
   }catch(e){alert(e.message)}
 }
 async function searchGastosProducts(){var input=document.getElementById("gastosProductSearch");gastosProductQuery=input?input.value.trim():"";try{await loadGastosProducts();renderGastosContent()}catch(e){alert(e.message)}}
-async function clearGastosProductSearch(){gastosProductQuery="";await searchGastosProducts()}
+async function clearGastosProductSearch(){gastosProductQuery="";var input=document.getElementById("gastosProductSearch");if(input)input.value="";try{await loadGastosProducts();renderGastosContent()}catch(e){alert(e.message)}}
 async function openGastosProduct(id){
   try{
     var s=await api("/api/gastos/products/"+id+"/stats"),last=s.last_purchase,rec=s.recommended_supermarket,habit=s.habitual_supermarket,shops=s.supermarket_stats||[];
