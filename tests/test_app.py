@@ -2848,3 +2848,43 @@ def test_shopping_task_reuses_single_task_when_list_changes(client):
     assert tasks[0]["id"] == task_id
     assert "Leche" in tasks[0]["description"]
     assert "Pan" in tasks[0]["description"]
+
+
+def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
+    rejected = client.post("/api/admin/reset-casa", json={"confirmation": "no"})
+    assert rejected.status_code == 400
+
+    before = client.get("/api/state").json()
+    assert before["tasks"]
+    assert before["areas"]
+    assert before["people"]
+
+    reset = client.post("/api/admin/reset-casa", json={"confirmation": "BORRAR TAREAS"})
+    assert reset.status_code == 200
+    assert reset.json()["ok"] is True
+
+    after = client.get("/api/state").json()
+    assert after["tasks"] == []
+    assert after["areas"] == []
+    assert after["people"] == []
+    assert after["inventory"] == []
+    assert after["events"] == []
+
+    import app as app_module
+    app_module.init_db()
+    after_restart = client.get("/api/state").json()
+    assert after_restart["tasks"] == []
+    assert after_restart["areas"] == []
+    assert after_restart["people"] == []
+
+
+def test_settings_expose_separate_reset_confirmation_actions(client):
+    root = client.get("/")
+    assert root.status_code == 200
+    bundle = client.get("/static/app.js?v=1.3.0")
+    assert bundle.status_code == 200
+    assert "openDatabaseResetConfirm" in bundle.text
+    assert "No, cancelar" in bundle.text
+    assert "Sí, borrar" in bundle.text
+    assert "Borrar datos de Casa Tareas" in bundle.text
+    assert "Borrar datos de Gastos" in bundle.text
