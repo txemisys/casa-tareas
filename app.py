@@ -316,7 +316,11 @@ def init_db():
                WHERE gastos_product_id IS NOT NULL"""
         )
 
-        if conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
+        sample_data_enabled = conn.execute(
+            "SELECT value FROM app_meta WHERE key='sample_data_disabled'"
+        ).fetchone() is None
+
+        if sample_data_enabled and conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO people(name,color,icon) VALUES(?,?,?)",
                 [
@@ -326,7 +330,7 @@ def init_db():
                 ],
             )
 
-        if conn.execute("SELECT COUNT(*) FROM areas").fetchone()[0] == 0:
+        if sample_data_enabled and conn.execute("SELECT COUNT(*) FROM areas").fetchone()[0] == 0:
             conn.executemany(
                 """INSERT INTO areas(name,description,color,icon)
                    VALUES(?,?,?,?)""",
@@ -342,7 +346,7 @@ def init_db():
                 ],
             )
 
-        if conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0:
+        if sample_data_enabled and conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0:
             t = today_local()
             samples = [
                 ("Limpiar baño","Lavabo, ducha, espejo e inodoro","Baño","#d9ecff","🛁","cycle",7,t-timedelta(days=2)),
@@ -366,7 +370,7 @@ def init_db():
         household_v4 = conn.execute(
             "SELECT value FROM app_meta WHERE key='household_defaults_v4'"
         ).fetchone()
-        if not household_v4:
+        if sample_data_enabled and not household_v4:
             default_renames = {
                 "Ana": "Cosi",
                 "Juan": "Jose",
@@ -2997,6 +3001,10 @@ class InventoryStockIn(BaseModel):
     shopping_requested: bool | None = None
 
 
+class ResetIn(BaseModel):
+    confirmation: str = ""
+
+
 class CalendarSubscriptionIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     url: str = Field(min_length=8, max_length=2000)
@@ -4260,6 +4268,75 @@ def unlink_inventory_from_gastos_product(item_id: int):
             entity_id=item_id,
         )
     return {"ok": True}
+
+
+@app.post("/api/admin/reset-casa")
+def reset_casa_database(payload: ResetIn):
+    if payload.confirmation != "BORRAR TAREAS":
+        raise HTTPException(400, "Confirmación incorrecta")
+    with db() as conn:
+        attachment_rows = conn.execute("SELECT * FROM attachments").fetchall()
+        for row in attachment_rows:
+            delete_attachment_file(row)
+
+        for table in (
+            "task_supplies",
+            "today_queue",
+            "schedule_overrides",
+            "completions",
+            "event_alert_ack",
+            "notification_deliveries",
+            "calendar_external_events",
+            "calendar_subscriptions",
+            "attachments",
+            "events",
+            "inventory_items",
+            "tasks",
+            "areas",
+            "people",
+            "undo_actions",
+            "activity_log",
+            "telegram_pending_actions",
+        ):
+            conn.execute(f"DELETE FROM {table}")
+
+        conn.execute(
+            """DELETE FROM sqlite_sequence WHERE name IN (
+               'people','areas','tasks','events','telegram_pending_actions',
+               'completions','schedule_overrides','undo_actions','activity_log',
+               'attachments','calendar_subscriptions','calendar_external_events',
+               'inventory_items'
+            )"""
+        )
+        set_meta(conn, "sample_data_disabled", "1")
+        delete_meta(conn, "shopping_task_id")
+        delete_meta(conn, "vacation_state")
+    return {"ok": True}
+
+
+@app.post("/api/gastos/admin/reset")
+def reset_gastos_database(payload: ResetIn):
+    if payload.confirmation != "BORRAR GASTOS":
+        raise HTTPException(400, "Confirmación incorrecta")
+    result = gastos_proxy_call(
+        "/api/v1/admin/reset",
+        method="POST",
+        payload={"confirmation": "BORRAR GASTOS"},
+    )
+    with db() as conn:
+        conn.execute(
+            """UPDATE inventory_items
+               SET gastos_product_id=NULL,last_purchased_at=NULL,
+                   last_purchase_ticket_id=NULL,updated_at=?""",
+            (iso_now(),),
+        )
+        log_activity(
+            conn,
+            "gastos_reset",
+            "Base de Gastos vaciada; vínculos de inventario eliminados",
+            entity_type="settings",
+        )
+    return result
 
 
 @app.post("/api/vacation/start")
