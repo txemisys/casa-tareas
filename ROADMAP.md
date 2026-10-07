@@ -37,6 +37,7 @@ Principios:
 - [x] Traducción de textos del sistema, registros de actividad y datos iniciales conocidos.
 
 ### Limitaciones conocidas
+- Una edición de ticket se reconcilia si contiene productos vinculados, pero eliminar un producto de un ticket o borrar el ticket no revierte automáticamente una reposición anterior, porque Casa no puede reconstruir con seguridad el stock físico previo.
 - La reposición automática inmediata se ejecuta al crear tickets por el proxy de Casa; cambios hechos directamente en la UI standalone de Gastos no siempre se reflejan inmediatamente en Casa.
 - El ahorro actual es por unidad/base y no un total real de cesta porque purchase_quantity sigue siendo texto libre.
 - El gráfico integrado no tiene todavía toda la interacción/riqueza que podría ofrecer la versión standalone.
@@ -75,17 +76,17 @@ Pendiente:
 - [x] Mostrar qué productos quedan fuera del cálculo.
 - [x] Tests de cantidades y unidades.
 
-### 3. Sincronización más profunda desde Gastos standalone — PRIORIDAD ACTUAL
+### 3. Sincronización más profunda desde Gastos standalone — COMPLETADO
 Objetivo: que Casa se actualice aunque un ticket se cree o edite directamente en :8000.
 
 Opciones a evaluar:
-- [ ] Endpoint de reconciliación incremental.
-- [ ] Polling por último ticket/modificación.
-- [ ] Webhook interno.
-- [ ] Reconciliar también PUT/edición de ticket.
-- [ ] Evitar dobles reposiciones o efectos repetidos.
+- [x] Endpoint de reconciliación incremental.
+- [x] Polling por último ticket/modificación.
+- [x] Webhook interno. — descartado como innecesario por ahora; se usa polling incremental idempotente.
+- [x] Reconciliar también PUT/edición de ticket.
+- [x] Evitar dobles reposiciones o efectos repetidos.
 
-### 4. Paridad y mejora del gráfico
+### 4. Paridad y mejora del gráfico — PRIORIDAD ACTUAL
 - [ ] Tooltips.
 - [ ] Valores al pasar el cursor.
 - [ ] Leyenda más clara.
@@ -140,4 +141,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es el hito 3: sincronizar compras creadas o editadas directamente en Gastos standalone con el inventario de Casa, de forma incremental e idempotente.
+La siguiente tarea es el hito 4: mejorar la paridad del gráfico integrado de Gastos empezando por tooltips/valores interactivos, leyenda más clara, comparación entre usuarios y revisión móvil.
