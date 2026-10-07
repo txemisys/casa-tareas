@@ -2503,17 +2503,17 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.3.5' in root.text
-    assert '/static/gastos.js?v=1.3.5' in root.text
+    assert '/static/app.js?v=1.3.6' in root.text
+    assert '/static/gastos.js?v=1.3.6' in root.text
     assert '/static/gastos.css?v=1.3.0' in root.text
-    assert '/static/i18n.js?v=1.3.5' in root.text
+    assert '/static/i18n.js?v=1.3.6' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.3.5")
+    bundle = client.get("/static/app.js?v=1.3.6")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
-    i18n = client.get("/static/i18n.js?v=1.3.5")
+    i18n = client.get("/static/i18n.js?v=1.3.6")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2530,6 +2530,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'function uiText(s)' in bundle.text
     assert 'esc(uiText(t.title))' in bundle.text
     assert 'esc(uiText(taskDescription(t)))' in bundle.text
+    assert 'Confianza '+ in bundle.text || 'recommendation_confidence' in bundle.text
     assert 'api("/api/state")' in bundle.text
 
 
@@ -2903,7 +2904,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.3.5")
+    bundle = client.get("/static/app.js?v=1.3.6")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text
