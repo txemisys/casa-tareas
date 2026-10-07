@@ -447,6 +447,33 @@ Object.assign(DE,{
 "Mostrar serie":"Reihe anzeigen","Ocultar serie":"Reihe ausblenden"
 });
 
+
+Object.assign(EN,{
+"Más":"More","Administración y opciones de Casa Tareas.":"Casa Tareas administration and options.",
+"Ver plan de compra":"View shopping plan","Abrir inventario":"Open inventory","Abrir Gastos":"Open Expenses",
+"Nuevo producto":"New product","Nuevo evento":"New event","Nueva área":"New area","Nueva persona":"New person","Nuevo ticket":"New receipt"
+});
+Object.assign(DE,{
+"Más":"Mehr","Administración y opciones de Casa Tareas.":"Verwaltung und Optionen von Casa Tareas.",
+"Ver plan de compra":"Einkaufsplan anzeigen","Abrir inventario":"Inventar öffnen","Abrir Gastos":"Ausgaben öffnen",
+"Nuevo producto":"Neues Produkt","Nuevo evento":"Neuer Termin","Nueva área":"Neuer Bereich","Nueva persona":"Neue Person","Nuevo ticket":"Neuer Beleg"
+});
+
+Object.assign(EN,{"Error de conexión":"Connection error"});
+Object.assign(DE,{"Error de conexión":"Verbindungsfehler"});
+
+
+Object.assign(EN,{
+"Piso Fanalwegle":"Fanalwegle apartment","Piso Im Gapetsch":"Im Gapetsch apartment","Casa de Cosi":"Cosi's house","Krankenkassen":"Health insurance",
+"Vacaciones-Viajes":"Holidays & travel","Archivada":"Archived","Archivadas":"Archived","Activas":"Active","Eventos":"Events","eventos":"events","documentos":"documents",
+"Regreso:":"Return:","Siguen activas:":"Still active:","Todas las áreas de tareas están pausadas":"All task areas are paused"
+});
+Object.assign(DE,{
+"Piso Fanalwegle":"Wohnung Fanalwegle","Piso Im Gapetsch":"Wohnung Im Gapetsch","Casa de Cosi":"Cosis Haus","Krankenkassen":"Krankenkassen",
+"Vacaciones-Viajes":"Urlaub & Reisen","Archivada":"Archiviert","Archivadas":"Archiviert","Activas":"Aktiv","Eventos":"Termine","eventos":"Termine","documentos":"Dokumente",
+"Regreso:":"Rückkehr:","Siguen activas:":"Weiter aktiv:","Todas las áreas de tareas están pausadas":"Alle Aufgabenbereiche sind pausiert"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={

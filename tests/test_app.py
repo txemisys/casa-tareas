@@ -2503,17 +2503,26 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.3.9' in root.text
-    assert '/static/gastos.js?v=1.3.9' in root.text
-    assert '/static/gastos.css?v=1.3.9' in root.text
-    assert '/static/i18n.js?v=1.3.9' in root.text
+    assert '/static/app.js?v=1.4.2' in root.text
+    assert '/static/gastos.js?v=1.4.2' in root.text
+    assert '/static/gastos.css?v=1.4.2' in root.text
+    assert '/static/i18n.js?v=1.4.2' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.3.9")
+    bundle = client.get("/static/app.js?v=1.4.2")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
-    i18n = client.get("/static/i18n.js?v=1.3.9")
+    assert "function updateHeaderAction()" in bundle.text
+    assert "function openMobileMore()" in bundle.text
+    assert "function goShoppingPlan()" in bundle.text
+    assert "function uiState(" in bundle.text
+    assert "uiText(a.name)" in bundle.text
+    assert "uiText(a.description)" in bundle.text
+    assert "app-state-error" in root.text
+    assert 'grid-template-columns:repeat(5,1fr)' in root.text
+    assert 'id="headerPrimary"' in root.text
+    i18n = client.get("/static/i18n.js?v=1.4.2")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2526,6 +2535,12 @@ def test_frontend_uses_external_script_bundle(client):
     assert '"Lavabo, ducha, espejo e inodoro":"Waschbecken, Dusche, Spiegel und Toilette"' in i18n.text
     assert '"Todos":"Alle"' in i18n.text
     assert '"Pendiente":"Fällig"' in i18n.text
+    assert '"Más":"More"' in i18n.text
+    assert '"Más":"Mehr"' in i18n.text
+    assert '"Ver plan de compra":"Einkaufsplan anzeigen"' in i18n.text
+    assert '"Error de conexión":"Verbindungsfehler"' in i18n.text
+    assert '"Piso Fanalwegle":"Wohnung Fanalwegle"' in i18n.text
+    assert '"Casa de Cosi":"Cosis Haus"' in i18n.text
     assert 'value.indexOf(" · ")>=0' in i18n.text
     assert 'function uiText(s)' in bundle.text
     assert 'esc(uiText(t.title))' in bundle.text
@@ -2535,7 +2550,9 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.3.9")
+    gastos_bundle = client.get("/static/gastos.js?v=1.4.2")
+    assert gastos_bundle.status_code == 200
+    assert "goShoppingPlan()" in gastos_bundle.text
     assert gastos_bundle.status_code == 200
     assert "function gastosToggleChartSeries" in gastos_bundle.text
     assert "gastos-chart-point" in gastos_bundle.text
@@ -2916,7 +2933,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.3.9")
+    bundle = client.get("/static/app.js?v=1.4.2")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text
