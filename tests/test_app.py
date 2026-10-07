@@ -214,6 +214,7 @@ def test_people_create_edit_delete_restore_and_keep_history(client):
     person = next(p for p in state["people"] if p["id"] == person_id)
     assert person["name"] == "Alexandra"
     assert person["color"] == "#fedcba"
+    assert person["gastos_user_name"] is None
 
     task_id = state["upcoming"][0]["id"]
     assert client.post(f"/api/today/{task_id}").status_code == 200
@@ -248,6 +249,101 @@ def test_people_create_edit_delete_restore_and_keep_history(client):
 
     assert client.post(f"/api/undo/{delete_undo_id}").status_code == 200
     assert any(p["id"] == person_id for p in get_state(client)["people"])
+
+
+def test_people_can_link_one_gastos_user_explicitly(client):
+    created = client.post(
+        "/api/people",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "Jose",
+        },
+    )
+    assert created.status_code == 200
+    person_id = created.json()["id"]
+
+    state = get_state(client)
+    person = next(p for p in state["people"] if p["id"] == person_id)
+    assert person["gastos_user_name"] == "Jose"
+
+    duplicate = client.post(
+        "/api/people",
+        json={
+            "name": "Otra persona",
+            "color": "#ffffff",
+            "icon": "👤",
+            "gastos_user_name": "Jose",
+        },
+    )
+    assert duplicate.status_code == 409
+    assert "ya está vinculado" in duplicate.json()["detail"]
+
+    changed = client.put(
+        f"/api/people/{person_id}",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "Cosi",
+        },
+    )
+    assert changed.status_code == 200
+    person = next(p for p in get_state(client)["people"] if p["id"] == person_id)
+    assert person["gastos_user_name"] == "Cosi"
+
+    unlinked = client.put(
+        f"/api/people/{person_id}",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "",
+        },
+    )
+    assert unlinked.status_code == 200
+    person = next(p for p in get_state(client)["people"] if p["id"] == person_id)
+    assert person["gastos_user_name"] is None
+
+
+def test_gastos_users_reports_explicit_casa_links(client, monkeypatch):
+    import app as app_module
+
+    created = client.post(
+        "/api/people",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "Jose",
+        },
+    )
+    assert created.status_code == 200
+    person_id = created.json()["id"]
+
+    def fake_proxy(path, method="GET", payload=None):
+        assert path == "/api/v1/lookups"
+        assert method == "GET"
+        return {
+            "articles": ["Leche"],
+            "users": ["Jose", "Cosi", "Invitado"],
+            "supermarkets": ["Coop"],
+        }
+
+    monkeypatch.setattr(app_module, "gastos_proxy_call", fake_proxy)
+    response = client.get("/api/gastos/users")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["linked_count"] == 1
+
+    jose = next(x for x in data["users"] if x["name"] == "Jose")
+    assert jose["person"]["id"] == person_id
+    assert jose["person"]["name"] == "Alex"
+    assert jose["person"]["icon"] == "🙂"
+
+    invitado = next(x for x in data["users"] if x["name"] == "Invitado")
+    assert invitado["person"] is None
 
 
 def test_cannot_delete_last_active_person(client):
