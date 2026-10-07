@@ -364,3 +364,102 @@ def test_product_stats_include_price_and_supermarket_recommendations(tmp_path):
     assert data["recommended_supermarket"]["average_unit_price"] == 8.5
     assert data["habitual_supermarket"]["supermarket"] == "Migros"
     assert data["habitual_supermarket"]["purchase_count"] == 2
+    assert data["recommended_supermarket"]["recommendation_unit_price"] == 8.5
+    assert data["recommendation"]["confidence"] == "medium"
+    assert data["recommendation"]["reason"] == "habitual_is_best"
+    assert data["recommendation"]["recent_window_days"] == 180
+
+
+def test_product_recommendation_ignores_single_old_bargain_when_habitual_has_evidence(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    purchases = [
+        ("Coop", "2026-08-15", "4.00"),
+        ("Coop", "2026-09-15", "4.10"),
+        ("Coop", "2026-10-01", "4.00"),
+        ("Migros", "2025-01-01", "1.00"),
+    ]
+    for supermarket, purchase_date, price in purchases:
+        response = client.post(
+            "/tickets",
+            data=ticket_form(
+                article="Detergente 1 l",
+                supermarket=supermarket,
+                purchase_date=purchase_date,
+            )
+            | {"quantity[]": ["1"], "price[]": [price]},
+        )
+        assert response.status_code == 302
+
+    product = client.get("/api/v1/products?q=detergente").json["items"][0]
+    data = client.get(f"/api/v1/products/{product['id']}/stats").json
+
+    assert data["habitual_supermarket"]["supermarket"] == "Coop"
+    assert data["recommended_supermarket"]["supermarket"] == "Coop"
+    assert data["recommendation"]["reason"] == "habitual_insufficient_alternative_evidence"
+    migros = next(x for x in data["supermarket_stats"] if x["supermarket"] == "Migros")
+    assert migros["priced_count"] == 1
+    assert migros["recent_priced_count"] == 0
+    assert migros["recommendation_confidence"] == "low"
+
+
+def test_product_recommendation_keeps_habitual_store_for_small_saving(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    purchases = [
+        ("Coop", "2026-08-10", "5.00"),
+        ("Coop", "2026-09-10", "5.00"),
+        ("Coop", "2026-10-01", "5.00"),
+        ("Migros", "2026-09-01", "4.85"),
+        ("Migros", "2026-09-20", "4.85"),
+    ]
+    for supermarket, purchase_date, price in purchases:
+        response = client.post(
+            "/tickets",
+            data=ticket_form(
+                article="Arroz 1 kg",
+                supermarket=supermarket,
+                purchase_date=purchase_date,
+            )
+            | {"quantity[]": ["1"], "price[]": [price]},
+        )
+        assert response.status_code == 302
+
+    product = client.get("/api/v1/products?q=arroz").json["items"][0]
+    data = client.get(f"/api/v1/products/{product['id']}/stats").json
+
+    assert data["habitual_supermarket"]["supermarket"] == "Coop"
+    assert data["recommended_supermarket"]["supermarket"] == "Coop"
+    assert data["recommendation"]["reason"] == "habitual_small_difference"
+    assert data["recommended_supermarket"]["recommendation_confidence"] == "medium"
+
+
+def test_product_recommendation_reports_high_confidence_with_repeated_recent_prices(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    for purchase_date, price in [
+        ("2026-07-20", "3.20"),
+        ("2026-08-15", "3.10"),
+        ("2026-09-10", "3.00"),
+        ("2026-10-01", "3.05"),
+    ]:
+        response = client.post(
+            "/tickets",
+            data=ticket_form(
+                article="Pasta 500 g",
+                supermarket="Lidl",
+                purchase_date=purchase_date,
+            )
+            | {"quantity[]": ["1"], "price[]": [price]},
+        )
+        assert response.status_code == 302
+
+    product = client.get("/api/v1/products?q=pasta").json["items"][0]
+    data = client.get(f"/api/v1/products/{product['id']}/stats").json
+
+    assert data["recommended_supermarket"]["supermarket"] == "Lidl"
+    assert data["recommendation"]["confidence"] == "high"
+    assert data["recommended_supermarket"]["recent_priced_count"] == 4
