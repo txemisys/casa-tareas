@@ -214,6 +214,7 @@ def test_people_create_edit_delete_restore_and_keep_history(client):
     person = next(p for p in state["people"] if p["id"] == person_id)
     assert person["name"] == "Alexandra"
     assert person["color"] == "#fedcba"
+    assert person["gastos_user_name"] is None
 
     task_id = state["upcoming"][0]["id"]
     assert client.post(f"/api/today/{task_id}").status_code == 200
@@ -248,6 +249,101 @@ def test_people_create_edit_delete_restore_and_keep_history(client):
 
     assert client.post(f"/api/undo/{delete_undo_id}").status_code == 200
     assert any(p["id"] == person_id for p in get_state(client)["people"])
+
+
+def test_people_can_link_one_gastos_user_explicitly(client):
+    created = client.post(
+        "/api/people",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "Jose",
+        },
+    )
+    assert created.status_code == 200
+    person_id = created.json()["id"]
+
+    state = get_state(client)
+    person = next(p for p in state["people"] if p["id"] == person_id)
+    assert person["gastos_user_name"] == "Jose"
+
+    duplicate = client.post(
+        "/api/people",
+        json={
+            "name": "Otra persona",
+            "color": "#ffffff",
+            "icon": "👤",
+            "gastos_user_name": "Jose",
+        },
+    )
+    assert duplicate.status_code == 409
+    assert "ya está vinculado" in duplicate.json()["detail"]
+
+    changed = client.put(
+        f"/api/people/{person_id}",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "Cosi",
+        },
+    )
+    assert changed.status_code == 200
+    person = next(p for p in get_state(client)["people"] if p["id"] == person_id)
+    assert person["gastos_user_name"] == "Cosi"
+
+    unlinked = client.put(
+        f"/api/people/{person_id}",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "",
+        },
+    )
+    assert unlinked.status_code == 200
+    person = next(p for p in get_state(client)["people"] if p["id"] == person_id)
+    assert person["gastos_user_name"] is None
+
+
+def test_gastos_users_reports_explicit_casa_links(client, monkeypatch):
+    import app as app_module
+
+    created = client.post(
+        "/api/people",
+        json={
+            "name": "Alex",
+            "color": "#abcdef",
+            "icon": "🙂",
+            "gastos_user_name": "Jose",
+        },
+    )
+    assert created.status_code == 200
+    person_id = created.json()["id"]
+
+    def fake_proxy(path, method="GET", payload=None):
+        assert path == "/api/v1/lookups"
+        assert method == "GET"
+        return {
+            "articles": ["Leche"],
+            "users": ["Jose", "Cosi", "Invitado"],
+            "supermarkets": ["Coop"],
+        }
+
+    monkeypatch.setattr(app_module, "gastos_proxy_call", fake_proxy)
+    response = client.get("/api/gastos/users")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["linked_count"] == 1
+
+    jose = next(x for x in data["users"] if x["name"] == "Jose")
+    assert jose["person"]["id"] == person_id
+    assert jose["person"]["name"] == "Alex"
+    assert jose["person"]["icon"] == "🙂"
+
+    invitado = next(x for x in data["users"] if x["name"] == "Invitado")
+    assert invitado["person"] is None
 
 
 def test_cannot_delete_last_active_person(client):
@@ -2503,26 +2599,28 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.4.2' in root.text
-    assert '/static/gastos.js?v=1.4.2' in root.text
-    assert '/static/gastos.css?v=1.4.2' in root.text
-    assert '/static/i18n.js?v=1.4.2' in root.text
+    assert '/static/app.js?v=1.5.0' in root.text
+    assert '/static/gastos.js?v=1.5.0' in root.text
+    assert '/static/gastos.css?v=1.5.0' in root.text
+    assert '/static/i18n.js?v=1.5.0' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.4.2")
+    bundle = client.get("/static/app.js?v=1.5.0")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert "function updateHeaderAction()" in bundle.text
     assert "function openMobileMore()" in bundle.text
     assert "function goShoppingPlan()" in bundle.text
+    assert "Usuario correspondiente en Gastos" in bundle.text
+    assert "gastos_user_name" in bundle.text
     assert "function uiState(" in bundle.text
     assert "uiText(a.name)" in bundle.text
     assert "uiText(a.description)" in bundle.text
     assert "app-state-error" in root.text
     assert 'grid-template-columns:repeat(5,1fr)' in root.text
     assert 'id="headerPrimary"' in root.text
-    i18n = client.get("/static/i18n.js?v=1.4.2")
+    i18n = client.get("/static/i18n.js?v=1.5.0")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2541,6 +2639,8 @@ def test_frontend_uses_external_script_bundle(client):
     assert '"Error de conexión":"Verbindungsfehler"' in i18n.text
     assert '"Piso Fanalwegle":"Wohnung Fanalwegle"' in i18n.text
     assert '"Casa de Cosi":"Cosis Haus"' in i18n.text
+    assert '"Usuario correspondiente en Gastos":"Matching user in Expenses"' in i18n.text
+    assert '"Usuario correspondiente en Gastos":"Entsprechender Benutzer in Ausgaben"' in i18n.text
     assert 'value.indexOf(" · ")>=0' in i18n.text
     assert 'function uiText(s)' in bundle.text
     assert 'esc(uiText(t.title))' in bundle.text
@@ -2550,8 +2650,9 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.4.2")
+    gastos_bundle = client.get("/static/gastos.js?v=1.5.0")
     assert gastos_bundle.status_code == 200
+    assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
     assert gastos_bundle.status_code == 200
     assert "function gastosToggleChartSeries" in gastos_bundle.text
@@ -2933,7 +3034,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.4.2")
+    bundle = client.get("/static/app.js?v=1.5.0")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text

@@ -55,7 +55,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.3.0")
+app = FastAPI(title="Casa Tareas", version="1.5.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -97,6 +97,7 @@ def init_db():
           name TEXT NOT NULL UNIQUE,
           color TEXT NOT NULL DEFAULT '#f7c8b6',
           icon TEXT NOT NULL DEFAULT '👤',
+          gastos_user_name TEXT,
           active INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS areas(
@@ -313,6 +314,7 @@ def init_db():
         ensure_column(conn, "areas", "pause_started_on", "TEXT")
         ensure_column(conn, "areas", "paused_until", "TEXT")
         ensure_column(conn, "areas", "pause_resume_mode", "TEXT")
+        ensure_column(conn, "people", "gastos_user_name", "TEXT")
         ensure_column(conn, "inventory_items", "gastos_product_id", "INTEGER")
         ensure_column(conn, "inventory_items", "last_purchased_at", "TEXT")
         ensure_column(conn, "inventory_items", "last_purchase_ticket_id", "INTEGER")
@@ -320,6 +322,11 @@ def init_db():
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_gastos_product
                ON inventory_items(gastos_product_id)
                WHERE gastos_product_id IS NOT NULL"""
+        )
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_people_gastos_user
+               ON people(gastos_user_name)
+               WHERE gastos_user_name IS NOT NULL AND gastos_user_name <> ''"""
         )
 
         sample_data_enabled = conn.execute(
@@ -1799,7 +1806,7 @@ def settings_json(conn):
     runtime = runtime_settings_json()
     runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.4.2",
+        "version": "1.5.0",
         "runtime": runtime,
         "telegram": telegram,
         "calendars": {
@@ -3069,6 +3076,7 @@ class PersonIn(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     color: str = "#f7c8b6"
     icon: str = "👤"
+    gastos_user_name: str | None = Field(default=None, max_length=120)
 
 
 @app.on_event("startup")
@@ -3118,7 +3126,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.4.2"}
+    return {"ok": True, "version": "1.5.0"}
 
 
 @app.get("/api/state")
@@ -3959,6 +3967,36 @@ def gastos_product_stats(product_id: int):
 @app.get("/api/gastos/lookups")
 def gastos_lookups():
     return gastos_proxy_call("/api/v1/lookups")
+
+
+@app.get("/api/gastos/users")
+def gastos_users():
+    lookups = gastos_proxy_call("/api/v1/lookups")
+    users = list(lookups.get("users") or [])
+    with db() as conn:
+        linked_rows = conn.execute(
+            """SELECT id,name,color,icon,active,gastos_user_name
+               FROM people
+               WHERE gastos_user_name IS NOT NULL AND gastos_user_name <> ''
+               ORDER BY active DESC,name COLLATE NOCASE,id"""
+        ).fetchall()
+    by_user = {
+        row["gastos_user_name"]: {
+            "id": row["id"],
+            "name": row["name"],
+            "color": row["color"],
+            "icon": row["icon"],
+            "active": bool(row["active"]),
+        }
+        for row in linked_rows
+    }
+    return {
+        "users": [
+            {"name": user_name, "person": by_user.get(user_name)}
+            for user_name in users
+        ],
+        "linked_count": sum(1 for user_name in users if user_name in by_user),
+    }
 
 
 @app.delete("/api/gastos/lookups/{category}")
@@ -5555,9 +5593,19 @@ def restore_area(area_id: int):
 @app.post("/api/people")
 def create_person(payload: PersonIn):
     name = payload.name.strip()
+    gastos_user_name = (payload.gastos_user_name or "").strip() or None
     if not name:
         raise HTTPException(400, "El nombre no puede estar vacío")
     with db() as conn:
+        if gastos_user_name:
+            linked = conn.execute(
+                "SELECT id,name FROM people WHERE gastos_user_name=?", (gastos_user_name,)
+            ).fetchone()
+            if linked:
+                raise HTTPException(
+                    409,
+                    f'El usuario de Gastos "{gastos_user_name}" ya está vinculado con {linked["name"]}',
+                )
         existing = conn.execute(
             "SELECT * FROM people WHERE name=?", (name,)
         ).fetchone()
@@ -5565,14 +5613,14 @@ def create_person(payload: PersonIn):
             if existing["active"]:
                 raise HTTPException(409, "Ya existe una persona con ese nombre")
             conn.execute(
-                "UPDATE people SET active=1,color=?,icon=? WHERE id=?",
-                (payload.color, payload.icon, existing["id"]),
+                "UPDATE people SET active=1,color=?,icon=?,gastos_user_name=? WHERE id=?",
+                (payload.color, payload.icon, gastos_user_name, existing["id"]),
             )
             return {"id": existing["id"], "reactivated": True}
 
         cur = conn.execute(
-            "INSERT INTO people(name,color,icon) VALUES(?,?,?)",
-            (name, payload.color, payload.icon),
+            "INSERT INTO people(name,color,icon,gastos_user_name) VALUES(?,?,?,?)",
+            (name, payload.color, payload.icon, gastos_user_name),
         )
         return {"id": cur.lastrowid, "reactivated": False}
 
@@ -5580,14 +5628,25 @@ def create_person(payload: PersonIn):
 @app.put("/api/people/{person_id}")
 def update_person(person_id: int, payload: PersonIn):
     name = payload.name.strip()
+    gastos_user_name = (payload.gastos_user_name or "").strip() or None
     if not name:
         raise HTTPException(400, "El nombre no puede estar vacío")
     with db() as conn:
         person_row(conn, person_id)
+        if gastos_user_name:
+            linked = conn.execute(
+                "SELECT id,name FROM people WHERE gastos_user_name=? AND id<>?",
+                (gastos_user_name, person_id),
+            ).fetchone()
+            if linked:
+                raise HTTPException(
+                    409,
+                    f'El usuario de Gastos "{gastos_user_name}" ya está vinculado con {linked["name"]}',
+                )
         try:
             conn.execute(
-                "UPDATE people SET name=?,color=?,icon=? WHERE id=?",
-                (name, payload.color, payload.icon, person_id),
+                "UPDATE people SET name=?,color=?,icon=?,gastos_user_name=? WHERE id=?",
+                (name, payload.color, payload.icon, gastos_user_name, person_id),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(409, "Ya existe una persona con ese nombre")
