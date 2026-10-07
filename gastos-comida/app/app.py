@@ -2,11 +2,11 @@ import json
 import os
 import re
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from flask import Flask, redirect, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import extract, func, inspect, text
+from sqlalchemy import and_, extract, func, inspect, or_, text
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -87,6 +87,7 @@ class Ticket(db.Model):
     supermarket = db.Column(db.String(120), nullable=False, index=True)
     total = db.Column(db.Float, nullable=False, default=0.0)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     items = db.relationship(
         "TicketItem",
         backref="ticket",
@@ -123,6 +124,13 @@ class LookupExclusion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     category = db.Column(db.String(40), nullable=False, index=True)
     value = db.Column(db.String(200), nullable=False, index=True)
+
+
+def touch_ticket(ticket):
+    now = datetime.utcnow()
+    if ticket.updated_at is not None and now <= ticket.updated_at:
+        now = ticket.updated_at + timedelta(microseconds=1)
+    ticket.updated_at = now
 
 
 def parse_float(value, default=0.0):
@@ -259,6 +267,11 @@ def ticket_to_dict(ticket):
         "date": ticket.purchase_date.strftime("%Y-%m-%d"),
         "supermarket": ticket.supermarket,
         "total": round(ticket.total, 2),
+        "updated_at": (
+            ticket.updated_at.isoformat(timespec="microseconds")
+            if ticket.updated_at is not None
+            else None
+        ),
         "items": [
             {
                 "product_id": item.product_id,
@@ -544,6 +557,20 @@ def restore_hidden_lookup_values(supermarket, items):
         ).delete(synchronize_session=False)
 
 
+def ensure_ticket_schema():
+    inspector = inspect(db.engine)
+    columns = {column["name"] for column in inspector.get_columns("ticket")}
+    if "updated_at" not in columns:
+        with db.engine.begin() as connection:
+            connection.execute(text("ALTER TABLE ticket ADD COLUMN updated_at DATETIME"))
+            connection.execute(
+                text("UPDATE ticket SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_ticket_updated_at ON ticket (updated_at)")
+            )
+
+
 def ensure_ticket_item_schema():
     inspector = inspect(db.engine)
     columns = {column["name"] for column in inspector.get_columns("ticket_item")}
@@ -764,11 +791,18 @@ def create_ticket():
         ticket.purchase_date = purchase_date
         ticket.supermarket = supermarket
         ticket.total = ticket_total
+        touch_ticket(ticket)
         ticket.items.clear()
         for item in items:
             ticket.items.append(item)
     else:
-        ticket = Ticket(purchase_date=purchase_date, supermarket=supermarket, total=ticket_total, items=items)
+        ticket = Ticket(
+            purchase_date=purchase_date,
+            supermarket=supermarket,
+            total=ticket_total,
+            items=items,
+            updated_at=datetime.utcnow(),
+        )
         db.session.add(ticket)
     db.session.commit()
     return redirect(url_for("index"))
@@ -904,12 +938,14 @@ def save_ticket_json(payload, ticket=None):
             supermarket=supermarket,
             total=ticket_total,
             items=items,
+            updated_at=datetime.utcnow(),
         )
         db.session.add(ticket)
     else:
         ticket.purchase_date = purchase_date
         ticket.supermarket = supermarket
         ticket.total = ticket_total
+        touch_ticket(ticket)
         ticket.items.clear()
         for item in items:
             ticket.items.append(item)
@@ -1405,6 +1441,81 @@ def api_v1_spending_summary():
     )
 
 
+@app.route("/api/v1/purchases/changes", methods=["GET"])
+def api_v1_purchase_changes():
+    after_raw = (request.args.get("after") or "").strip()
+    try:
+        after_id = max(0, int(request.args.get("after_id", "0")))
+    except ValueError:
+        after_id = 0
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", "50"))))
+    except ValueError:
+        limit = 50
+
+    after = None
+    if after_raw:
+        try:
+            after = datetime.fromisoformat(after_raw.replace("Z", "+00:00"))
+            if after.tzinfo is not None:
+                after = after.replace(tzinfo=None)
+        except ValueError:
+            return json_response({"detail": "Cursor de sincronización no válido"}, 400)
+
+    if (request.args.get("latest") or "").strip().lower() in {"1", "true", "yes"}:
+        latest = Ticket.query.order_by(Ticket.updated_at.desc(), Ticket.id.desc()).first()
+        return json_response(
+            {
+                "items": [],
+                "count": 0,
+                "cursor": {
+                    "updated_at": (
+                        latest.updated_at.isoformat(timespec="microseconds")
+                        if latest and latest.updated_at is not None
+                        else None
+                    ),
+                    "ticket_id": latest.id if latest else 0,
+                },
+                "has_more": False,
+            }
+        )
+
+    query = Ticket.query
+    if after is not None:
+        query = query.filter(
+            or_(
+                Ticket.updated_at > after,
+                and_(Ticket.updated_at == after, Ticket.id > after_id),
+            )
+        )
+
+    tickets = (
+        query.order_by(Ticket.updated_at.asc(), Ticket.id.asc())
+        .limit(limit)
+        .all()
+    )
+    items = [ticket_to_dict(ticket) for ticket in tickets]
+    if tickets:
+        cursor_ticket = tickets[-1]
+        cursor = {
+            "updated_at": cursor_ticket.updated_at.isoformat(timespec="microseconds"),
+            "ticket_id": cursor_ticket.id,
+        }
+    else:
+        cursor = {
+            "updated_at": after.isoformat(timespec="microseconds") if after else None,
+            "ticket_id": after_id,
+        }
+    return json_response(
+        {
+            "items": items,
+            "count": len(items),
+            "cursor": cursor,
+            "has_more": len(items) == limit,
+        }
+    )
+
+
 @app.route("/api/v1/purchases/recent", methods=["GET"])
 def api_v1_recent_purchases():
     try:
@@ -1432,6 +1543,7 @@ def api_v1_recent_purchases():
 
 with app.app_context():
     db.create_all()
+    ensure_ticket_schema()
     ensure_ticket_item_schema()
     normalize_stored_items()
     backfill_products()

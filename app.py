@@ -42,13 +42,18 @@ DEFAULT_ICAL_SYNC_MINUTES = max(
     5, int(os.getenv("ICAL_SYNC_MINUTES", "30") or "30")
 )
 DEFAULT_GASTOS_COMIDA_URL = os.getenv("GASTOS_COMIDA_URL", "").strip()
+DEFAULT_GASTOS_SYNC_SECONDS = max(
+    30, int(os.getenv("GASTOS_SYNC_SECONDS", "60") or "60")
+)
 MAX_ATTACHMENT_BYTES = DEFAULT_MAX_ATTACHMENT_BYTES
 TZ = ZoneInfo(DEFAULT_TIMEZONE_NAME)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_POLL_SECONDS = DEFAULT_TELEGRAM_POLL_SECONDS
 ICAL_SYNC_MINUTES = DEFAULT_ICAL_SYNC_MINUTES
+GASTOS_SYNC_SECONDS = DEFAULT_GASTOS_SYNC_SECONDS
 TELEGRAM_TASK = None
 CALENDAR_TASK = None
+GASTOS_SYNC_TASK = None
 
 app = FastAPI(title="Casa Tareas", version="1.3.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -1363,6 +1368,11 @@ def gastos_comida_status(conn):
         ),
         "last_ok_at": get_meta(conn, "gastos_comida_last_ok_at"),
         "last_error": get_meta(conn, "gastos_comida_last_error", ""),
+        "sync_last_at": get_meta(conn, "gastos_comida_sync_last_at"),
+        "sync_last_error": get_meta(conn, "gastos_comida_sync_last_error", ""),
+        "sync_worker_running": bool(
+            GASTOS_SYNC_TASK and not GASTOS_SYNC_TASK.done()
+        ),
     }
 
 
@@ -1789,7 +1799,7 @@ def settings_json(conn):
     runtime = runtime_settings_json()
     runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.3.7",
+        "version": "1.3.8",
         "runtime": runtime,
         "telegram": telegram,
         "calendars": {
@@ -3063,7 +3073,7 @@ class PersonIn(BaseModel):
 
 @app.on_event("startup")
 async def startup():
-    global TELEGRAM_TASK, CALENDAR_TASK
+    global TELEGRAM_TASK, CALENDAR_TASK, GASTOS_SYNC_TASK
     init_db()
     with db() as conn:
         load_runtime_settings(conn)
@@ -3072,11 +3082,12 @@ async def startup():
     if token_configured:
         TELEGRAM_TASK = asyncio.create_task(telegram_reminder_loop())
     CALENDAR_TASK = asyncio.create_task(calendar_sync_loop())
+    GASTOS_SYNC_TASK = asyncio.create_task(gastos_purchase_sync_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global TELEGRAM_TASK, CALENDAR_TASK
+    global TELEGRAM_TASK, CALENDAR_TASK, GASTOS_SYNC_TASK
     if TELEGRAM_TASK:
         TELEGRAM_TASK.cancel()
         try:
@@ -3091,6 +3102,13 @@ async def shutdown():
         except asyncio.CancelledError:
             pass
         CALENDAR_TASK = None
+    if GASTOS_SYNC_TASK:
+        GASTOS_SYNC_TASK.cancel()
+        try:
+            await GASTOS_SYNC_TASK
+        except asyncio.CancelledError:
+            pass
+        GASTOS_SYNC_TASK = None
 
 
 @app.get("/")
@@ -3100,7 +3118,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.3.7"}
+    return {"ok": True, "version": "1.3.8"}
 
 
 @app.get("/api/state")
@@ -3339,6 +3357,10 @@ def save_gastos_comida_settings(payload: GastosIntegrationIn):
             delete_meta(conn, "gastos_comida_url")
         delete_meta(conn, "gastos_comida_last_ok_at")
         delete_meta(conn, "gastos_comida_last_error")
+        delete_meta(conn, "gastos_comida_sync_cursor_at")
+        delete_meta(conn, "gastos_comida_sync_cursor_id")
+        delete_meta(conn, "gastos_comida_sync_last_at")
+        delete_meta(conn, "gastos_comida_sync_last_error")
         log_activity(
             conn,
             "integration_updated",
@@ -3349,6 +3371,14 @@ def save_gastos_comida_settings(payload: GastosIntegrationIn):
             "ok": True,
             "integration": gastos_comida_status(conn),
         }
+
+
+@app.post("/api/integrations/gastos-comida/sync")
+def sync_gastos_comida_now():
+    result = sync_gastos_purchase_changes()
+    if not result.get("ok"):
+        raise HTTPException(502, result.get("error") or "No se pudo sincronizar Gastos")
+    return result
 
 
 @app.post("/api/integrations/gastos-comida/test")
@@ -3396,6 +3426,14 @@ def reconcile_gastos_ticket_with_inventory(conn, ticket):
     ).fetchall()
     updated = []
     for item in rows:
+        already_reconciled = (
+            item["stock_status"] == "ok"
+            and not bool(item["shopping_requested"])
+            and str(item["last_purchase_ticket_id"] or "") == str(ticket_id or "")
+            and str(item["last_purchased_at"] or "") == str(purchased_at or "")
+        )
+        if already_reconciled:
+            continue
         conn.execute(
             """UPDATE inventory_items
                SET stock_status='ok',shopping_requested=0,last_purchased_at=?,
@@ -3413,6 +3451,114 @@ def reconcile_gastos_ticket_with_inventory(conn, ticket):
             entity_id=item["id"],
         )
     return updated
+
+
+def sync_gastos_purchase_changes():
+    with db() as conn:
+        if not gastos_comida_url(conn):
+            return {"ok": True, "configured": False, "reconciled": []}
+        cursor_at = get_meta(conn, "gastos_comida_sync_cursor_at")
+        try:
+            cursor_id = int(get_meta(conn, "gastos_comida_sync_cursor_id", "0") or 0)
+        except (TypeError, ValueError):
+            cursor_id = 0
+
+    try:
+        if not cursor_at:
+            with db() as conn:
+                result = gastos_comida_api_request(
+                    conn, "/api/v1/purchases/changes?latest=1"
+                )
+                cursor = result.get("cursor") or {}
+                if cursor.get("updated_at"):
+                    set_meta(
+                        conn,
+                        "gastos_comida_sync_cursor_at",
+                        cursor["updated_at"],
+                    )
+                set_meta(
+                    conn,
+                    "gastos_comida_sync_cursor_id",
+                    int(cursor.get("ticket_id") or 0),
+                )
+                set_meta(conn, "gastos_comida_sync_last_at", iso_now())
+                delete_meta(conn, "gastos_comida_sync_last_error")
+                set_meta(conn, "gastos_comida_last_ok_at", iso_now())
+                delete_meta(conn, "gastos_comida_last_error")
+            return {
+                "ok": True,
+                "configured": True,
+                "bootstrapped": True,
+                "reconciled": [],
+            }
+
+        reconciled = []
+        pages = 0
+        while pages < 10:
+            pages += 1
+            query = urllib.parse.urlencode(
+                {
+                    "after": cursor_at,
+                    "after_id": cursor_id,
+                    "limit": 100,
+                }
+            )
+            with db() as conn:
+                result = gastos_comida_api_request(
+                    conn, "/api/v1/purchases/changes?" + query
+                )
+                for ticket in result.get("items") or []:
+                    reconciled.extend(
+                        reconcile_gastos_ticket_with_inventory(conn, ticket)
+                    )
+
+                cursor = result.get("cursor") or {}
+                next_at = cursor.get("updated_at") or cursor_at
+                next_id = int(cursor.get("ticket_id") or cursor_id)
+                cursor_at = next_at
+                cursor_id = next_id
+                if cursor_at:
+                    set_meta(conn, "gastos_comida_sync_cursor_at", cursor_at)
+                set_meta(conn, "gastos_comida_sync_cursor_id", cursor_id)
+                set_meta(conn, "gastos_comida_sync_last_at", iso_now())
+                delete_meta(conn, "gastos_comida_sync_last_error")
+                set_meta(conn, "gastos_comida_last_ok_at", iso_now())
+                delete_meta(conn, "gastos_comida_last_error")
+                sync_shopping_task(conn)
+
+            if not result.get("has_more") or not result.get("items"):
+                break
+
+        return {
+            "ok": True,
+            "configured": True,
+            "bootstrapped": False,
+            "reconciled": reconciled,
+            "cursor": {
+                "updated_at": cursor_at,
+                "ticket_id": cursor_id,
+            },
+        }
+    except RuntimeError as exc:
+        with db() as conn:
+            set_meta(conn, "gastos_comida_sync_last_error", str(exc))
+        return {
+            "ok": False,
+            "configured": True,
+            "error": str(exc),
+            "reconciled": [],
+        }
+
+
+async def gastos_purchase_sync_loop():
+    while True:
+        try:
+            await asyncio.to_thread(sync_gastos_purchase_changes)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"Gastos sync worker error: {exc}", flush=True)
+        await asyncio.sleep(GASTOS_SYNC_SECONDS)
 
 
 def gastos_proxy_call(path, method="GET", payload=None):
@@ -4662,6 +4808,10 @@ def reset_gastos_database(payload: ResetIn):
                    last_purchase_ticket_id=NULL,updated_at=?""",
             (iso_now(),),
         )
+        delete_meta(conn, "gastos_comida_sync_cursor_at")
+        delete_meta(conn, "gastos_comida_sync_cursor_id")
+        delete_meta(conn, "gastos_comida_sync_last_at")
+        delete_meta(conn, "gastos_comida_sync_last_error")
         log_activity(
             conn,
             "gastos_reset",

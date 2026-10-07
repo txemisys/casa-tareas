@@ -90,6 +90,69 @@ def ticket_form(article="Leche 1 l", supermarket="Coop", purchase_date="2026-10-
     }
 
 
+def test_purchase_changes_tracks_new_and_edited_tickets(tmp_path):
+    module = load_gastos_app(tmp_path)
+    client = module.app.test_client()
+
+    created = client.post(
+        "/api/v1/tickets",
+        json={
+            "purchase_date": "2026-10-01",
+            "supermarket": "Coop",
+            "items": [
+                {
+                    "article": "Leche 1 l",
+                    "quantity": 1,
+                    "price": 2.0,
+                    "user_name": "Jose",
+                }
+            ],
+        },
+    )
+    assert created.status_code == 201
+    ticket = created.json["ticket"]
+    assert ticket["updated_at"]
+
+    latest = client.get("/api/v1/purchases/changes?latest=1")
+    assert latest.status_code == 200
+    cursor = latest.json["cursor"]
+    assert latest.json["items"] == []
+    assert cursor["ticket_id"] == ticket["id"]
+
+    updated = client.put(
+        f"/api/v1/tickets/{ticket['id']}",
+        json={
+            "purchase_date": "2026-10-02",
+            "supermarket": "Migros",
+            "items": [
+                {
+                    "article": "Leche 1 l",
+                    "quantity": 2,
+                    "price": 1.8,
+                    "user_name": "Jose",
+                }
+            ],
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json["ticket"]["updated_at"] >= ticket["updated_at"]
+
+    changes = client.get(
+        "/api/v1/purchases/changes",
+        query_string={
+            "after": cursor["updated_at"],
+            "after_id": cursor["ticket_id"],
+        },
+    )
+    assert changes.status_code == 200
+    assert changes.json["count"] == 1
+    changed = changes.json["items"][0]
+    assert changed["id"] == ticket["id"]
+    assert changed["date"] == "2026-10-02"
+    assert changed["supermarket"] == "Migros"
+    assert changes.json["cursor"]["ticket_id"] == ticket["id"]
+
+
 def test_product_identity_is_created_and_reused(tmp_path):
     module = load_gastos_app(tmp_path)
     client = module.app.test_client()
@@ -207,6 +270,8 @@ def test_protected_mode_migrates_existing_legacy_database_without_losing_rows(tm
         item = module.TicketItem.query.one()
         assert item.product_id is not None
         assert item.product.name == "Leche"
+        ticket = module.Ticket.query.one()
+        assert ticket.updated_at is not None
 
 
 def test_json_ticket_crud_dashboard_and_lookup_api(tmp_path):
