@@ -459,6 +459,9 @@ Object.assign(DE,{
 "Nuevo producto":"Neues Produkt","Nuevo evento":"Neuer Termin","Nueva área":"Neuer Bereich","Nueva persona":"Neue Person","Nuevo ticket":"Neuer Beleg"
 });
 
+Object.assign(EN,{"Error de conexión":"Connection error"});
+Object.assign(DE,{"Error de conexión":"Verbindungsfehler"});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
