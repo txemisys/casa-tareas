@@ -138,6 +138,15 @@ Objetivo: vincular personas de Casa con usuarios históricos de Gastos sin rompe
 
 Nota: Gastos no tiene una entidad User con ID propio; por eso el vínculo seguro usa el ID estable de Persona de Casa y conserva exactamente el user_name histórico de Gastos.
 
+### 10. Alertas útiles de calidad de datos — COMPLETADO
+Objetivo: mostrar en el Tablero solo incidencias accionables sin modificar datos automáticamente.
+- [x] Avisar cuando existe gasto de usuarios de Gastos sin Persona vinculada.
+- [x] Avisar de vínculos obsoletos de Inventario o Personas.
+- [x] Avisar cuando existen coincidencias exactas que se pueden revisar manualmente.
+- [x] Accesos directos a Personas o Configuración → Gastos según el problema.
+- [x] No mostrar el bloque cuando no hay incidencias.
+- [x] Mantener matching manual: ninguna alerta aplica enlaces automáticamente.
+
 ## Reglas de trabajo
 
 Antes de mergear cambios relevantes:
@@ -176,4 +185,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es desplegar la versión 1.6.0 y validar el nuevo bloque Tablero → Resumen del hogar → Gasto por persona. Después, revisar alertas útiles de calidad de datos y decidir qué automatizaciones domésticas aportan valor sin modificar históricos ni aplicar matching ambiguo.
+Tras desplegar 1.7.0 y validar las alertas de calidad de datos del Tablero, el siguiente paso es decidir qué automatizaciones domésticas aportan valor real. Mantener como reglas que ninguna automatización modifique históricos de Gastos ni aplique matching ambiguo.
