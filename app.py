@@ -4808,6 +4808,10 @@ def reset_gastos_database(payload: ResetIn):
                    last_purchase_ticket_id=NULL,updated_at=?""",
             (iso_now(),),
         )
+        delete_meta(conn, "gastos_comida_sync_cursor_at")
+        delete_meta(conn, "gastos_comida_sync_cursor_id")
+        delete_meta(conn, "gastos_comida_sync_last_at")
+        delete_meta(conn, "gastos_comida_sync_last_error")
         log_activity(
             conn,
             "gastos_reset",
