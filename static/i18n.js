@@ -333,6 +333,46 @@ Object.assign(DE,{
 "Pausada":"Pausiert","pendiente":"überfällig"
 });
 
+
+Object.assign(EN,{
+"Área":"Area","Tarea":"Task","Responsable:":"Owner:","Gestión / carga mental":"Management / mental load",
+"Casa Tareas:":"Casa Tareas:","Gastos:":"Expenses:",
+"En el despliegue conjunto la URL interna es":"In the combined deployment the internal URL is",
+"El servicio está protegido para no arrancar con una base vacía: antes de activarlo hay que apuntar":"The service is protected from starting with an empty database: before enabling it, point",
+"a la carpeta que contiene tu":"to the folder containing your","Este token viene de":"This token comes from",
+"Para administrarlo desde esta pantalla, elimina esa variable de":"To manage it from this screen, remove that variable from",
+"y recrea el contenedor una única vez.":"and recreate the container once.",
+"Si el token se guarda aquí queda dentro de":"If the token is saved here it is stored in","trata las copias de seguridad de":"treat backups of","como información sensible.":"as sensitive information.",
+"Para conectarlo a un grupo: añade el bot al grupo, escribe":"To connect it to a group: add the bot to the group and type",
+"Añade el bot al grupo, envía":"Add the bot to the group, send","y prueba de nuevo.":"and try again.",
+"etc. No hay comandos de borrado.":"etc. There are no delete commands.",
+"— ver tareas y eventos de hoy":"— view today's tasks and events","— ver la lista de compra":"— view the shopping list","— pregunta quién la hizo":"— asks who did it","— deshacer el último cambio hecho desde Telegram":"— undo the latest change made from Telegram",
+"Configuración → Telegram":"Settings → Telegram","Comprueba la conexión o el proxy de red.":"Check the connection or network proxy.",
+"devolvió HTML en lugar de datos JSON. Un proxy o filtro de red puede estar interceptando la API.":"returned HTML instead of JSON. A proxy or network filter may be intercepting the API.",
+"devolvió una respuesta no válida.":"returned an invalid response.","La llamada":"The call",
+"elimina tareas, áreas, personas, agenda, inventario, historial y adjuntos, pero conserva la configuración de la aplicación.":"deletes tasks, areas, people, calendar, inventory, history and attachments, but preserves application settings.",
+"elimina tickets, líneas, productos y listas auxiliares, sin tocar Casa Tareas.":"deletes receipts, lines, products and auxiliary lists without touching Casa Tareas."
+});
+Object.assign(DE,{
+"Área":"Bereich","Tarea":"Aufgabe","Responsable:":"Verantwortlich:","Gestión / carga mental":"Verwaltung / mentale Belastung",
+"Casa Tareas:":"Casa Tareas:","Gastos:":"Ausgaben:",
+"En el despliegue conjunto la URL interna es":"Im kombinierten Betrieb ist die interne URL",
+"El servicio está protegido para no arrancar con una base vacía: antes de activarlo hay que apuntar":"Der Dienst startet nicht mit einer leeren Datenbank: vor dem Aktivieren muss",
+"a la carpeta que contiene tu":"auf den Ordner mit deiner","Este token viene de":"Dieser Token kommt aus",
+"Para administrarlo desde esta pantalla, elimina esa variable de":"Um ihn hier zu verwalten, entferne diese Variable aus",
+"y recrea el contenedor una única vez.":"und erstelle den Container einmal neu.",
+"Si el token se guarda aquí queda dentro de":"Wenn der Token hier gespeichert wird, liegt er in","trata las copias de seguridad de":"behandle Sicherungen von","como información sensible.":"als vertrauliche Informationen.",
+"Para conectarlo a un grupo: añade el bot al grupo, escribe":"Zum Verbinden mit einer Gruppe: Bot hinzufügen und eingeben",
+"Añade el bot al grupo, envía":"Füge den Bot zur Gruppe hinzu, sende","y prueba de nuevo.":"und versuche es erneut.",
+"etc. No hay comandos de borrado.":"usw. Es gibt keine Löschbefehle.",
+"— ver tareas y eventos de hoy":"— heutige Aufgaben und Termine anzeigen","— ver la lista de compra":"— Einkaufsliste anzeigen","— pregunta quién la hizo":"— fragt, wer sie erledigt hat","— deshacer el último cambio hecho desde Telegram":"— letzte über Telegram vorgenommene Änderung rückgängig machen",
+"Configuración → Telegram":"Einstellungen → Telegram","Comprueba la conexión o el proxy de red.":"Prüfe Verbindung oder Netzwerkproxy.",
+"devolvió HTML en lugar de datos JSON. Un proxy o filtro de red puede estar interceptando la API.":"lieferte HTML statt JSON. Ein Proxy oder Netzwerkfilter könnte die API abfangen.",
+"devolvió una respuesta no válida.":"lieferte eine ungültige Antwort.","La llamada":"Der Aufruf",
+"elimina tareas, áreas, personas, agenda, inventario, historial y adjuntos, pero conserva la configuración de la aplicación.":"löscht Aufgaben, Bereiche, Personen, Kalender, Inventar, Verlauf und Anhänge, behält aber die Anwendungseinstellungen.",
+"elimina tickets, líneas, productos y listas auxiliares, sin tocar Casa Tareas.":"löscht Belege, Positionen, Produkte und Hilfslisten, ohne Casa Tareas zu verändern."
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
