@@ -153,6 +153,9 @@ Después, recarga fuerte del navegador si cambia frontend:
 Ctrl + Shift + R
 ```
 
+## Incidencias corregidas recientemente
+- [x] 1.5.2: corregido fallo en Gastos integrado `gastosChartHidden is not defined`; la gráfica anual vuelve a renderizar y permite ocultar/mostrar series.
+
 ## Punto exacto para retomar
 
-La siguiente tarea es desplegar la versión 1.5.1 y validar visualmente: idiomas, móvil, Personas compartidas y el nuevo panel Configuración → Gastos → Revisar integración. Después, priorizar mejoras operativas que reduzcan trabajo manual sin aplicar vínculos ambiguos ni modificar históricos.
+La siguiente tarea es desplegar la versión 1.5.2 y validar visualmente: idiomas, móvil, Personas compartidas y el nuevo panel Configuración → Gastos → Revisar integración. Después, priorizar mejoras operativas que reduzcan trabajo manual sin aplicar vínculos ambiguos ni modificar históricos.
