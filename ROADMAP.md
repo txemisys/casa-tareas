@@ -95,9 +95,9 @@ Opciones a evaluar:
 - [x] Verificar que ninguna función útil del gráfico standalone se pierde.
 
 ### 5. Pulido de navegación y UX — PRIORIDAD ACTUAL
-- [ ] Botón principal contextual: Nueva tarea / Nuevo ticket / Nuevo producto según sección.
-- [ ] Revisar navegación móvil con muchas pestañas.
-- [ ] Atajos Inventario ↔ Gastos ↔ Plan de compra.
+- [x] Botón principal contextual: Nueva tarea / Nuevo ticket / Nuevo producto según sección.
+- [x] Revisar navegación móvil con muchas pestañas: barra reducida a Tablero, Tareas, Agenda, Gastos y Más.
+- [x] Atajos Inventario ↔ Gastos ↔ Plan de compra.
 - [ ] Estados de carga/error homogéneos.
 - [ ] Auditoría visual completa de español, inglés y alemán.
 
@@ -141,4 +141,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es el hito 5: pulir navegación y UX, empezando por botón principal contextual, navegación móvil y atajos entre Inventario, Gastos y Plan de compra.
+La siguiente tarea es continuar el hito 5: unificar estados de carga/error y después hacer una auditoría visual completa en español, inglés y alemán. El botón principal contextual, la navegación móvil simplificada y los atajos Inventario ↔ Gastos ↔ Plan de compra ya están implementados en la rama feature/navigation-ux-polish.
