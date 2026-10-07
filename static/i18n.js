@@ -514,6 +514,13 @@ Object.assign(DE,{
 "Vincular":"Verknüpfen","Producto vinculado con Gastos":"Produkt mit Ausgaben verknüpft","Persona vinculada con Gastos":"Person mit Ausgaben verknüpft"
 });
 
+Object.assign(EN,{
+"Gasto por persona":"Spending by person","Gasto sin persona vinculada:":"Spending without a linked person:","Vincular personas":"Link people","vs. mes anterior":"vs. previous month"
+});
+Object.assign(DE,{
+"Gasto por persona":"Ausgaben pro Person","Gasto sin persona vinculada:":"Ausgaben ohne verknüpfte Person:","Vincular personas":"Personen verknüpfen","vs. mes anterior":"ggü. Vormonat"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
