@@ -3219,6 +3219,22 @@ def test_task_reports_blocked_by_missing_supply(client):
 def test_home_summary_combines_current_and_previous_month_spending(client, monkeypatch):
     import app as app_module
 
+    people = get_state(client)["people"]
+    jose = next(p for p in people if p["name"] == "Jose")
+    cosi = next(p for p in people if p["name"] == "Cosi")
+    for person, gastos_user in ((jose, "Jose"), (cosi, "Cosi")):
+        linked = client.put(
+            f"/api/people/{person['id']}",
+            json={
+                "name": person["name"],
+                "color": person["color"],
+                "icon": person["icon"],
+                "gastos_user_name": gastos_user,
+            },
+        )
+        assert linked.status_code == 200
+
+
     saved = client.put(
         "/api/settings/gastos-comida",
         json={"url": "http://gastos-comida:8000"},
@@ -3244,11 +3260,30 @@ def test_home_summary_combines_current_and_previous_month_spending(client, monke
             raise AssertionError(request.full_url)
         if "from=2026-10-01" in request.full_url:
             return FakeResponse(
-                {"from": "2026-10-01", "to": "2026-10-06", "total": 120.0, "ticket_count": 4}
+                {
+                    "from": "2026-10-01",
+                    "to": "2026-10-06",
+                    "total": 120.0,
+                    "ticket_count": 4,
+                    "by_user": [
+                        {"user_name": "Jose", "total": 70.0, "line_count": 5},
+                        {"user_name": "Cosi", "total": 40.0, "line_count": 3},
+                        {"user_name": "Invitado", "total": 10.0, "line_count": 1},
+                    ],
+                }
             )
         if "from=2026-09-01" in request.full_url:
             return FakeResponse(
-                {"from": "2026-09-01", "to": "2026-09-30", "total": 100.0, "ticket_count": 5}
+                {
+                    "from": "2026-09-01",
+                    "to": "2026-09-30",
+                    "total": 100.0,
+                    "ticket_count": 5,
+                    "by_user": [
+                        {"user_name": "Jose", "total": 50.0, "line_count": 4},
+                        {"user_name": "Cosi", "total": 50.0, "line_count": 4},
+                    ],
+                }
             )
         raise AssertionError(request.full_url)
 
@@ -3261,6 +3296,18 @@ def test_home_summary_combines_current_and_previous_month_spending(client, monke
     assert data["current_month"]["total"] == 120.0
     assert data["previous_month"]["total"] == 100.0
     assert data["change_percent"] == 20.0
+
+    assert [x["person_name"] for x in data["people_spending"]] == ["Jose", "Cosi"]
+    assert data["people_spending"][0]["current_total"] == 70.0
+    assert data["people_spending"][0]["previous_total"] == 50.0
+    assert data["people_spending"][0]["change_percent"] == 40.0
+    assert data["people_spending"][0]["share_percent"] == 58.3
+    assert data["people_spending"][1]["current_total"] == 40.0
+    assert data["people_spending"][1]["change_percent"] == -20.0
+    assert data["unlinked_user_total"] == 10.0
+    assert data["unlinked_user_spending"] == [
+        {"user_name": "Invitado", "total": 10.0}
+    ]
 
 
 def test_incremental_gastos_sync_bootstraps_then_reconciles_new_changes(client, monkeypatch):
