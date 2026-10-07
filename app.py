@@ -55,7 +55,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.5.1")
+app = FastAPI(title="Casa Tareas", version="1.5.2")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -1806,7 +1806,7 @@ def settings_json(conn):
     runtime = runtime_settings_json()
     runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.5.1",
+        "version": "1.5.2",
         "runtime": runtime,
         "telegram": telegram,
         "calendars": {
@@ -3126,7 +3126,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.5.1"}
+    return {"ok": True, "version": "1.5.2"}
 
 
 @app.get("/api/state")
