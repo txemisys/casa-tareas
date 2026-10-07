@@ -3,6 +3,7 @@ var gastosDashboard=null;
 var gastosTickets=[];
 var gastosProducts=[];
 var gastosProductQuery="";
+var gastosChartHidden=[];
 var gastosFilters={article:"",user:"",supermarket:"",start_date:"",end_date:"",chart_year:new Date().getFullYear()};
 
 function gastosMoney(value){return new Intl.NumberFormat("es-ES",{style:"currency",currency:"EUR"}).format(Number(value||0))}
