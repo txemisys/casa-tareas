@@ -6,7 +6,7 @@ from datetime import date, datetime
 
 from flask import Flask, redirect, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import extract, func, inspect, text
+from sqlalchemy import and_, extract, func, inspect, or_, text
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1455,12 +1455,30 @@ def api_v1_purchase_changes():
         except ValueError:
             return json_response({"detail": "Cursor de sincronización no válido"}, 400)
 
+    if (request.args.get("latest") or "").strip().lower() in {"1", "true", "yes"}:
+        latest = Ticket.query.order_by(Ticket.updated_at.desc(), Ticket.id.desc()).first()
+        return json_response(
+            {
+                "items": [],
+                "count": 0,
+                "cursor": {
+                    "updated_at": (
+                        latest.updated_at.isoformat(timespec="microseconds")
+                        if latest and latest.updated_at is not None
+                        else None
+                    ),
+                    "ticket_id": latest.id if latest else 0,
+                },
+                "has_more": False,
+            }
+        )
+
     query = Ticket.query
     if after is not None:
         query = query.filter(
-            db.or_(
+            or_(
                 Ticket.updated_at > after,
-                db.and_(Ticket.updated_at == after, Ticket.id > after_id),
+                and_(Ticket.updated_at == after, Ticket.id > after_id),
             )
         )
 
