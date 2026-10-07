@@ -474,6 +474,22 @@ Object.assign(DE,{
 "Regreso:":"Rückkehr:","Siguen activas:":"Weiter aktiv:","Todas las áreas de tareas están pausadas":"Alle Aufgabenbereiche sind pausiert"
 });
 
+
+Object.assign(EN,{
+"Nombre, icono, color y vínculo opcional con Gastos.":"Name, icon, color and optional Expenses link.",
+"Usuario correspondiente en Gastos":"Matching user in Expenses",
+"Vincula de forma explícita con un usuario histórico de Gastos; no se fusiona por nombre automáticamente.":"Explicitly link to a historical Expenses user; names are never merged automatically.",
+"Configura Gastos para poder vincular esta persona con un usuario histórico.":"Configure Expenses to link this person with a historical user.",
+"ya vinculado":"already linked"
+});
+Object.assign(DE,{
+"Nombre, icono, color y vínculo opcional con Gastos.":"Name, Symbol, Farbe und optionale Ausgaben-Verknüpfung.",
+"Usuario correspondiente en Gastos":"Entsprechender Benutzer in Ausgaben",
+"Vincula de forma explícita con un usuario histórico de Gastos; no se fusiona por nombre automáticamente.":"Explizit mit einem historischen Ausgaben-Benutzer verknüpfen; Namen werden nie automatisch zusammengeführt.",
+"Configura Gastos para poder vincular esta persona con un usuario histórico.":"Konfiguriere Ausgaben, um diese Person mit einem historischen Benutzer zu verknüpfen.",
+"ya vinculado":"bereits verknüpft"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
