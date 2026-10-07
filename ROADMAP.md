@@ -101,6 +101,15 @@ Opciones a evaluar:
 - [x] Estados de carga/error homogéneos en Casa, plan de compra y Gastos integrado.
 - [x] Auditoría visual completa de español, inglés y alemán validada en navegador real por el usuario.
 
+### 9. Gasto del hogar por Persona vinculada — COMPLETADO
+Objetivo: aprovechar los vínculos Persona Casa ↔ usuario Gastos para dar contexto financiero en el Tablero.
+- [x] Gastos /api/v1/spending/summary devuelve desglose por usuario histórico sin romper el contrato anterior.
+- [x] Casa mapea ese gasto únicamente a Personas vinculadas explícitamente.
+- [x] Mostrar gasto del mes, cuota porcentual y variación frente al mes anterior por Persona.
+- [x] Mostrar gasto de usuarios de Gastos todavía no vinculados sin asignarlo a nadie.
+- [x] Mantener tickets e históricos intactos.
+- [x] Tests de reparto por usuario y mapeo por Persona.
+
 ### 8. Vinculación asistida de coincidencias exactas — COMPLETADO
 Objetivo: reducir trabajo manual sin introducir matching ambiguo.
 - [x] Botón Vincular para coincidencias exactas Inventario ↔ Producto Gastos.
@@ -166,4 +175,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es desplegar la versión 1.5.3 y validar los botones Vincular del panel Configuración → Gastos → Revisar integración. Después, continuar con mejoras operativas: enriquecer el resumen del hogar con gasto por Persona vinculada y revisar alertas útiles sobre calidad de datos, sin modificar históricos automáticamente.
+La siguiente tarea es desplegar la versión 1.6.0 y validar el nuevo bloque Tablero → Resumen del hogar → Gasto por persona. Después, revisar alertas útiles de calidad de datos y decidir qué automatizaciones domésticas aportan valor sin modificar históricos ni aplicar matching ambiguo.

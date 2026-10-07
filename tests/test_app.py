@@ -2722,19 +2722,21 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.5.3' in root.text
-    assert '/static/gastos.js?v=1.5.3' in root.text
-    assert '/static/gastos.css?v=1.5.3' in root.text
-    assert '/static/i18n.js?v=1.5.3' in root.text
+    assert '/static/app.js?v=1.6.0' in root.text
+    assert '/static/gastos.js?v=1.6.0' in root.text
+    assert '/static/gastos.css?v=1.6.0' in root.text
+    assert '/static/i18n.js?v=1.6.0' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.5.3")
+    bundle = client.get("/static/app.js?v=1.6.0")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert "function updateHeaderAction()" in bundle.text
     assert "function openMobileMore()" in bundle.text
     assert "function goShoppingPlan()" in bundle.text
+    assert "Gasto por persona" in bundle.text
+    assert "unlinked_user_total" in bundle.text
     assert "function integrationHealthPanel()" in bundle.text
     assert '"/api/gastos/integration-health"' in bundle.text
     assert '"/api/gastos/integration-health/link-product"' in bundle.text
@@ -2750,7 +2752,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert "app-state-error" in root.text
     assert 'grid-template-columns:repeat(5,1fr)' in root.text
     assert 'id="headerPrimary"' in root.text
-    i18n = client.get("/static/i18n.js?v=1.5.3")
+    i18n = client.get("/static/i18n.js?v=1.6.0")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2782,7 +2784,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.5.3")
+    gastos_bundle = client.get("/static/gastos.js?v=1.6.0")
     assert gastos_bundle.status_code == 200
     assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
@@ -3167,7 +3169,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.5.3")
+    bundle = client.get("/static/app.js?v=1.6.0")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text
@@ -3219,6 +3221,22 @@ def test_task_reports_blocked_by_missing_supply(client):
 def test_home_summary_combines_current_and_previous_month_spending(client, monkeypatch):
     import app as app_module
 
+    people = get_state(client)["people"]
+    jose = next(p for p in people if p["name"] == "Jose")
+    cosi = next(p for p in people if p["name"] == "Cosi")
+    for person, gastos_user in ((jose, "Jose"), (cosi, "Cosi")):
+        linked = client.put(
+            f"/api/people/{person['id']}",
+            json={
+                "name": person["name"],
+                "color": person["color"],
+                "icon": person["icon"],
+                "gastos_user_name": gastos_user,
+            },
+        )
+        assert linked.status_code == 200
+
+
     saved = client.put(
         "/api/settings/gastos-comida",
         json={"url": "http://gastos-comida:8000"},
@@ -3244,11 +3262,30 @@ def test_home_summary_combines_current_and_previous_month_spending(client, monke
             raise AssertionError(request.full_url)
         if "from=2026-10-01" in request.full_url:
             return FakeResponse(
-                {"from": "2026-10-01", "to": "2026-10-06", "total": 120.0, "ticket_count": 4}
+                {
+                    "from": "2026-10-01",
+                    "to": "2026-10-06",
+                    "total": 120.0,
+                    "ticket_count": 4,
+                    "by_user": [
+                        {"user_name": "Jose", "total": 70.0, "line_count": 5},
+                        {"user_name": "Cosi", "total": 40.0, "line_count": 3},
+                        {"user_name": "Invitado", "total": 10.0, "line_count": 1},
+                    ],
+                }
             )
         if "from=2026-09-01" in request.full_url:
             return FakeResponse(
-                {"from": "2026-09-01", "to": "2026-09-30", "total": 100.0, "ticket_count": 5}
+                {
+                    "from": "2026-09-01",
+                    "to": "2026-09-30",
+                    "total": 100.0,
+                    "ticket_count": 5,
+                    "by_user": [
+                        {"user_name": "Jose", "total": 50.0, "line_count": 4},
+                        {"user_name": "Cosi", "total": 50.0, "line_count": 4},
+                    ],
+                }
             )
         raise AssertionError(request.full_url)
 
@@ -3261,6 +3298,18 @@ def test_home_summary_combines_current_and_previous_month_spending(client, monke
     assert data["current_month"]["total"] == 120.0
     assert data["previous_month"]["total"] == 100.0
     assert data["change_percent"] == 20.0
+
+    assert [x["person_name"] for x in data["people_spending"]] == ["Jose", "Cosi"]
+    assert data["people_spending"][0]["current_total"] == 70.0
+    assert data["people_spending"][0]["previous_total"] == 50.0
+    assert data["people_spending"][0]["change_percent"] == 40.0
+    assert data["people_spending"][0]["share_percent"] == 58.3
+    assert data["people_spending"][1]["current_total"] == 40.0
+    assert data["people_spending"][1]["change_percent"] == -20.0
+    assert data["unlinked_user_total"] == 10.0
+    assert data["unlinked_user_spending"] == [
+        {"user_name": "Invitado", "total": 10.0}
+    ]
 
 
 def test_incremental_gastos_sync_bootstraps_then_reconciles_new_changes(client, monkeypatch):
