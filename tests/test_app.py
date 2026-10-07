@@ -2530,7 +2530,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'function uiText(s)' in bundle.text
     assert 'esc(uiText(t.title))' in bundle.text
     assert 'esc(uiText(taskDescription(t)))' in bundle.text
-    assert 'Confianza '+ in bundle.text || 'recommendation_confidence' in bundle.text
+    assert 'recommendation_confidence' in bundle.text
     assert 'api("/api/state")' in bundle.text
 
 
