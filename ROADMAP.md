@@ -99,7 +99,15 @@ Opciones a evaluar:
 - [x] Revisar navegación móvil con muchas pestañas: barra reducida a Tablero, Tareas, Agenda, Gastos y Más.
 - [x] Atajos Inventario ↔ Gastos ↔ Plan de compra.
 - [x] Estados de carga/error homogéneos en Casa, plan de compra y Gastos integrado.
-- [~] Auditoría visual completa de español, inglés y alemán: auditoría estática y datos iniciales conocidos cubierta; falta validación visual final en navegador real.
+- [x] Auditoría visual completa de español, inglés y alemán validada en navegador real por el usuario.
+
+### 8. Vinculación asistida de coincidencias exactas — COMPLETADO
+Objetivo: reducir trabajo manual sin introducir matching ambiguo.
+- [x] Botón Vincular para coincidencias exactas Inventario ↔ Producto Gastos.
+- [x] Botón Vincular para coincidencias exactas Persona Casa ↔ usuario Gastos.
+- [x] Revalidar la coincidencia exacta en backend justo antes de enlazar.
+- [x] No aplicar enlaces en lote ni automáticamente.
+- [x] Registrar la acción en actividad.
 
 ### 7. Salud de la integración y calidad de vínculos — COMPLETADO
 Objetivo: detectar problemas y oportunidades de vinculación sin tocar datos automáticamente.
@@ -158,4 +166,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es desplegar la versión 1.5.2 y validar visualmente: idiomas, móvil, Personas compartidas y el nuevo panel Configuración → Gastos → Revisar integración. Después, priorizar mejoras operativas que reduzcan trabajo manual sin aplicar vínculos ambiguos ni modificar históricos.
+La siguiente tarea es desplegar la versión 1.5.3 y validar los botones Vincular del panel Configuración → Gastos → Revisar integración. Después, continuar con mejoras operativas: enriquecer el resumen del hogar con gasto por Persona vinculada y revisar alertas útiles sobre calidad de datos, sin modificar históricos automáticamente.
