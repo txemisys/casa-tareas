@@ -353,6 +353,7 @@ en:[
 [/^Actualizado el producto "(.+)"$/,'Updated product "$1"'],[/^Archivado el producto "(.+)"$/,'Archived product "$1"'],[/^Añadido al inventario "(.+)"$/,'Added to inventory "$1"'],
 [/^Añadido a Comprar "(.+)"$/,'Added to Shopping "$1"'],[/^Repuesto desde Gastos: "(.+)"$/,'Restocked from Expenses: "$1"'],[/^Vinculado "(.+)" con Gastos: (.+)$/,'Linked "$1" with Expenses: $2'],
 [/^Desvinculado "(.+)" de Gastos$/,'Unlinked "$1" from Expenses'],[/^Añadido el calendario externo "(.+)"$/,'Added external calendar "$1"'],[/^Actualizado el calendario externo "(.+)"$/,'Updated external calendar "$1"'],
+[/^Actualizado el evento "(.+)"$/,'Updated event "$1"'],[/^Eliminado el evento "(.+)"$/,'Deleted event "$1"'],[/^(.+) completó "(.+)"$/,'$1 completed "$2"'],
 [/^Eliminado el calendario externo "(.+)"$/,'Deleted external calendar "$1"'],[/^Eliminado el adjunto "(.+)"$/,'Deleted attachment "$1"'],[/^Eliminada la persona "(.+)"$/,'Deleted person "$1"'],
 [/^Creada "Hacer la compra" · (\d+) producto\(s\)$/,'Created "Do the shopping" · $1 product(s)'],[/^Reactivada "Hacer la compra" · (\d+) producto\(s\)$/,'Reactivated "Do the shopping" · $1 product(s)'],
 [/^Modo vacaciones hasta (.+)$/,"Vacation mode until $1"],[/^Ticket #(\d+)$/,"Receipt #$1"],[/^(\d+) producto(?:s)? · (.+)$/,"$1 product(s) · $2"]
@@ -374,6 +375,7 @@ de:[
 [/^Actualizado el producto "(.+)"$/,'Produkt "$1" aktualisiert'],[/^Archivado el producto "(.+)"$/,'Produkt "$1" archiviert'],[/^Añadido al inventario "(.+)"$/,'"$1" zum Inventar hinzugefügt'],
 [/^Añadido a Comprar "(.+)"$/,'"$1" zum Einkauf hinzugefügt'],[/^Repuesto desde Gastos: "(.+)"$/,'Aus Ausgaben nachgefüllt: "$1"'],[/^Vinculado "(.+)" con Gastos: (.+)$/,'"$1" mit Ausgaben verknüpft: $2'],
 [/^Desvinculado "(.+)" de Gastos$/,'"$1" von Ausgaben getrennt'],[/^Añadido el calendario externo "(.+)"$/,'Externer Kalender "$1" hinzugefügt'],[/^Actualizado el calendario externo "(.+)"$/,'Externer Kalender "$1" aktualisiert'],
+[/^Actualizado el evento "(.+)"$/,'Termin "$1" aktualisiert'],[/^Eliminado el evento "(.+)"$/,'Termin "$1" gelöscht'],[/^(.+) completó "(.+)"$/,'$1 hat "$2" erledigt'],
 [/^Eliminado el calendario externo "(.+)"$/,'Externer Kalender "$1" gelöscht'],[/^Eliminado el adjunto "(.+)"$/,'Anhang "$1" gelöscht'],[/^Eliminada la persona "(.+)"$/,'Person "$1" gelöscht'],
 [/^Creada "Hacer la compra" · (\d+) producto\(s\)$/,'"Einkaufen gehen" erstellt · $1 Produkt(e)'],[/^Reactivada "Hacer la compra" · (\d+) producto\(s\)$/,'"Einkaufen gehen" reaktiviert · $1 Produkt(e)'],
 [/^Modo vacaciones hasta (.+)$/,"Urlaubsmodus bis $1"],[/^Ticket #(\d+)$/,"Beleg #$1"],[/^(\d+) producto(?:s)? · (.+)$/,"$1 Produkt(e) · $2"]
@@ -428,6 +430,7 @@ de:[
 var backendPhrases={
 en:[
 ["Actualizada la configuración de Casa Tareas","Casa Tareas settings updated"],["Actualizada la integración con Gastos de comida","Expenses integration updated"],
+["Eliminada la configuración del bot de Telegram","Telegram bot configuration deleted"],["Telegram configurado","Telegram configured"],["La tarea ha vuelto a Hoy.","The task has returned to Today."],
 ["Base de Gastos vaciada; vínculos de inventario eliminados","Expenses database cleared; inventory links removed"],["La lista de compra vuelve a estar vacía.","The shopping list is empty again."],
 ['Lista vacía: resuelta "Hacer la compra"','Empty list: "Do the shopping" resolved'],["Orden de Hoy cambiado","Today order changed"],["Tarea completada","Task completed"],["Tarea archivada","Task archived"],
 ["Tarea pospuesta","Task postponed"],["Tarea movida de área","Task moved to another area"],["Persona eliminada","Person deleted"],["Persona restaurada","Person restored"],
@@ -451,6 +454,7 @@ en:[
 ],
 de:[
 ["Actualizada la configuración de Casa Tareas","Casa-Tareas-Einstellungen aktualisiert"],["Actualizada la integración con Gastos de comida","Ausgaben-Integration aktualisiert"],
+["Eliminada la configuración del bot de Telegram","Telegram-Bot-Konfiguration gelöscht"],["Telegram configurado","Telegram konfiguriert"],["La tarea ha vuelto a Hoy.","Die Aufgabe ist zu Heute zurückgekehrt."],
 ["Base de Gastos vaciada; vínculos de inventario eliminados","Ausgabendatenbank geleert; Inventarverknüpfungen entfernt"],["La lista de compra vuelve a estar vacía.","Die Einkaufsliste ist wieder leer."],
 ['Lista vacía: resuelta "Hacer la compra"','Leere Liste: "Einkaufen gehen" erledigt'],["Orden de Hoy cambiado","Reihenfolge von Heute geändert"],["Tarea completada","Aufgabe erledigt"],["Tarea archivada","Aufgabe archiviert"],
 ["Tarea pospuesta","Aufgabe verschoben"],["Tarea movida de área","Aufgabe in anderen Bereich verschoben"],["Persona eliminada","Person gelöscht"],["Persona restaurada","Person wiederhergestellt"],
