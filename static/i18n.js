@@ -437,6 +437,16 @@ Object.assign(DE,{
 "Las compras nuevas o editadas directamente en Gastos se sincronizan automáticamente con el Inventario de Casa.":"Direkt in Ausgaben neu erstellte oder bearbeitete Einkäufe werden automatisch mit dem Casa-Inventar synchronisiert."
 });
 
+
+Object.assign(EN,{
+"Pasa el cursor o enfoca un punto para ver el valor. Pulsa una serie para mostrarla u ocultarla.":"Hover or focus a point to see its value. Press a series to show or hide it.",
+"Mostrar serie":"Show series","Ocultar serie":"Hide series"
+});
+Object.assign(DE,{
+"Pasa el cursor o enfoca un punto para ver el valor. Pulsa una serie para mostrarla u ocultarla.":"Bewege den Zeiger über einen Punkt oder fokussiere ihn, um den Wert zu sehen. Drücke eine Reihe, um sie ein- oder auszublenden.",
+"Mostrar serie":"Reihe anzeigen","Ocultar serie":"Reihe ausblenden"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={

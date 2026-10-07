@@ -97,19 +97,36 @@ function renderGastosSummary(){
   return renderGastosMetrics()+'<div class="gastos-grid"><section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Evolución anual</h2><p>Total mensual y desglose por usuario.</p></div><select onchange="gastosChangeYear(this.value)">'+(d.years||[]).map(function(y){return'<option value="'+y+'" '+(Number(f.chart_year)===Number(y)?"selected":"")+'>'+y+'</option>'}).join("")+'</select></div>'+gastosChart(f.chart_labels||[],f.chart_datasets||[])+'</section><section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Estado</h2><p>Datos disponibles en Gastos.</p></div></div><div class="gastos-product-stats"><div class="gastos-product-stat"><span>Tickets</span><strong>'+Number(counts.tickets||0)+'</strong></div><div class="gastos-product-stat"><span>Productos</span><strong>'+Number(counts.products||0)+'</strong></div><div class="gastos-product-stat"><span>Líneas</span><strong>'+Number(counts.items||0)+'</strong></div><div class="gastos-product-stat"><span>Por comprar</span><strong>'+shopping.length+'</strong></div></div></section></div>'+shoppingPanel+'<section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Últimos tickets</h2><p>Las compras más recientes.</p></div><button class="secondary" onclick="gastosGo(\'tickets\')">Ver todos</button></div><div class="gastos-ticket-list">'+(recent.length?recent.map(function(t){return gastosTicketCard(t,true)}).join(""):'<div class="gastos-empty">Todavía no hay tickets.</div>')+"</div></section>";
 }
 function gastosChangeYear(value){gastosFilters.chart_year=Number(value)||new Date().getFullYear();loadGastosDashboard().catch(function(e){alert(e.message)})}
+function gastosToggleChartSeries(index){
+  gastosChartHidden[index]=!gastosChartHidden[index];
+  renderGastosContent();
+}
 function gastosChart(labels,datasets){
   if(!datasets||!datasets.length)return'<div class="gastos-empty">No hay datos para la gráfica.</div>';
   var colors=["#246bfe","#21a56b","#d68b2c","#8a62d3","#d45768","#2c9bad","#7b8798"];
-  var all=[];datasets.forEach(function(ds){(ds.data||[]).forEach(function(v){all.push(Number(v||0))})});
+  var visible=datasets.map(function(ds,i){return{ds:ds,index:i}}).filter(function(x){return !gastosChartHidden[x.index]});
+  if(!visible.length)visible=datasets.map(function(ds,i){return{ds:ds,index:i}});
+  var all=[];visible.forEach(function(x){(x.ds.data||[]).forEach(function(v){all.push(Number(v||0))})});
   var max=Math.max.apply(null,all.concat([1]));var top=Math.ceil(max/10)*10||10;
-  var W=760,H=260,left=48,right=18,topPad=18,bottom=34,plotW=W-left-right,plotH=H-topPad-bottom;
+  var W=760,H=282,left=52,right=18,topPad=26,bottom=38,plotW=W-left-right,plotH=H-topPad-bottom;
   var svg='<svg class="gastos-chart" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Gráfica anual de gastos">';
   for(var g=0;g<=4;g++){var y=topPad+(plotH*g/4);var val=top*(1-g/4);svg+='<line class="gastos-chart-grid" x1="'+left+'" y1="'+y+'" x2="'+(W-right)+'" y2="'+y+'"></line><text class="gastos-chart-axis" x="4" y="'+(y+3)+'">'+esc(gastosNumber(val,0))+' €</text>'}
   labels.forEach(function(l,i){var x=left+(plotW*(i/(Math.max(labels.length-1,1))));svg+='<text class="gastos-chart-axis" text-anchor="middle" x="'+x+'" y="'+(H-8)+'">'+esc(l)+'</text>'});
-  datasets.forEach(function(ds,di){var pts=(ds.data||[]).map(function(v,i){var x=left+(plotW*(i/(Math.max(labels.length-1,1))));var y=topPad+plotH-(Number(v||0)/top*plotH);return[x,y]});var color=colors[di%colors.length];svg+='<polyline class="gastos-chart-line" stroke="'+color+'" points="'+pts.map(function(p){return p[0]+","+p[1]}).join(" ")+'"></polyline>';pts.forEach(function(p){svg+='<circle class="gastos-chart-dot" fill="'+color+'" cx="'+p[0]+'" cy="'+p[1]+'" r="4"></circle>'})});
+  visible.forEach(function(entry){
+    var ds=entry.ds,di=entry.index,color=colors[di%colors.length];
+    var pts=(ds.data||[]).map(function(v,i){var value=Number(v||0),x=left+(plotW*(i/(Math.max(labels.length-1,1)))),y=topPad+plotH-(value/top*plotH);return[x,y,value,i]});
+    svg+='<polyline class="gastos-chart-line" stroke="'+color+'" points="'+pts.map(function(p){return p[0]+","+p[1]}).join(" ")+'"></polyline>';
+    pts.forEach(function(p){
+      var label=labels[p[3]]||"",series=ds.label||"Serie",money=gastosMoney(p[2]);
+      svg+='<g class="gastos-chart-point" tabindex="0" role="img" aria-label="'+esc(series+" · "+label+" · "+money)+'"><title>'+esc(series+" · "+label+": "+money)+'</title><circle class="gastos-chart-dot" fill="'+color+'" cx="'+p[0]+'" cy="'+p[1]+'" r="5"></circle>'+(p[2]>0?'<text class="gastos-chart-value" text-anchor="middle" x="'+p[0]+'" y="'+Math.max(12,p[1]-9)+'">'+esc(gastosNumber(p[2],2))+' €</text>':"")+'</g>';
+    });
+  });
   svg+="</svg>";
-  var legend='<div class="gastos-chart-legend">'+datasets.map(function(ds,i){return'<span class="gastos-chart-key"><i style="background:'+colors[i%colors.length]+'"></i>'+esc(ds.label||"Serie")+'</span>'}).join("")+"</div>";
-  return'<div class="gastos-chart-wrap">'+svg+"</div>"+legend;
+  var legend='<div class="gastos-chart-legend">'+datasets.map(function(ds,i){
+    var hidden=!!gastosChartHidden[i],sum=(ds.data||[]).reduce(function(a,v){return a+Number(v||0)},0);
+    return'<button type="button" class="gastos-chart-key '+(hidden?"off":"")+'" onclick="gastosToggleChartSeries('+i+')" title="'+esc((hidden?"Mostrar serie ":"Ocultar serie ")+(ds.label||"Serie"))+'"><i style="background:'+colors[i%colors.length]+'"></i><span>'+esc(ds.label||"Serie")+'</span><strong>'+esc(gastosMoney(sum))+'</strong></button>';
+  }).join("")+"</div>";
+  return'<div class="gastos-chart-help">Pasa el cursor o enfoca un punto para ver el valor. Pulsa una serie para mostrarla u ocultarla.</div><div class="gastos-chart-wrap">'+svg+"</div>"+legend;
 }
 async function loadGastosTickets(){var r=await api("/api/gastos/tickets?limit=500");gastosTickets=r.items||[]}
 function renderGastosTickets(){
