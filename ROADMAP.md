@@ -101,11 +101,16 @@ Opciones a evaluar:
 - [x] Estados de carga/error homogéneos en Casa, plan de compra y Gastos integrado.
 - [~] Auditoría visual completa de español, inglés y alemán: auditoría estática y datos iniciales conocidos cubierta; falta validación visual final en navegador real.
 
-### 6. Personas compartidas
-Objetivo futuro: evaluar si los usuarios/personas de Gastos deben vincularse con las personas de Casa sin romper históricos ni nombres existentes.
-- [ ] Diseñar vínculo estable por ID.
-- [ ] No fusionar por nombre de forma agresiva.
-- [ ] Mantener compatibilidad con tickets históricos.
+### 6. Personas compartidas — COMPLETADO (fase segura)
+Objetivo: vincular personas de Casa con usuarios históricos de Gastos sin romper tickets ni nombres existentes.
+- [x] Vínculo explícito y estable anclado al ID de Persona de Casa y al nombre histórico exacto de Gastos.
+- [x] No fusionar por nombre de forma agresiva.
+- [x] Un usuario de Gastos no puede vincularse a dos personas de Casa.
+- [x] Mantener compatibilidad con tickets históricos: el ticket sigue guardando el user_name original.
+- [x] Mostrar el vínculo en Personas y en controles de usuario de Gastos.
+- [x] Endpoint /api/gastos/users para consultar usuarios históricos y su Persona vinculada.
+
+Nota: Gastos no tiene una entidad User con ID propio; por eso el vínculo seguro usa el ID estable de Persona de Casa y conserva exactamente el user_name histórico de Gastos.
 
 ## Reglas de trabajo
 
@@ -141,4 +146,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es desplegar la versión 1.4.2 y hacer la validación visual final en navegador real, especialmente en alemán e inglés. Revisar Tablero, Tareas, Inventario, Agenda, Áreas, Gastos, Historial y Configuración; comprobar también móvil (menú Más) y los atajos Inventario ↔ Gastos ↔ Plan de compra. Si aparece texto del sistema en español, añadirlo a static/i18n.js o pasar el valor conocido por uiText(); no traducir contenido libre escrito por el usuario.
+La siguiente tarea es desplegar la versión 1.5.0 y validar dos frentes: (1) la auditoría visual final en alemán/inglés y móvil; (2) el nuevo vínculo Persona Casa ↔ usuario histórico de Gastos desde Personas, comprobando que los tickets siguen guardando el nombre histórico exacto. Después, continuar con mejoras de integración orientadas a automatización y calidad de datos, sin alterar las bases reales ni hacer matching difuso.
