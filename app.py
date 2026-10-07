@@ -55,7 +55,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.5.2")
+app = FastAPI(title="Casa Tareas", version="1.5.3")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -1806,7 +1806,7 @@ def settings_json(conn):
     runtime = runtime_settings_json()
     runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.5.2",
+        "version": "1.5.3",
         "runtime": runtime,
         "telegram": telegram,
         "calendars": {
@@ -3044,6 +3044,15 @@ class InventoryStockIn(BaseModel):
 class ResetIn(BaseModel):
     confirmation: str = ""
 
+class ExactProductLinkIn(BaseModel):
+    inventory_id: int = Field(ge=1)
+    product_id: int = Field(ge=1)
+
+
+class ExactUserLinkIn(BaseModel):
+    person_id: int = Field(ge=1)
+    gastos_user_name: str = Field(min_length=1, max_length=120)
+
 
 class CalendarSubscriptionIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -3126,7 +3135,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.5.2"}
+    return {"ok": True, "version": "1.5.3"}
 
 
 @app.get("/api/state")
@@ -4123,6 +4132,94 @@ def gastos_integration_health():
         "status": "attention"
         if stale_product_links or stale_user_links
         else ("suggestions" if product_suggestions or user_suggestions else "ok"),
+    }
+
+
+@app.post("/api/gastos/integration-health/link-product")
+def gastos_link_exact_product(payload: ExactProductLinkIn):
+    product = gastos_proxy_call(f"/api/v1/products/{payload.product_id}")
+    product_name = str(product.get("name") or "").strip()
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM inventory_items WHERE id=? AND active=1",
+            (payload.inventory_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(404, "Producto de inventario no encontrado")
+        if item["gastos_product_id"] is not None:
+            raise HTTPException(409, "El producto de inventario ya está vinculado con Gastos")
+        if item["name"].strip().casefold() != product_name.casefold():
+            raise HTTPException(409, "La coincidencia exacta ya no es válida")
+        duplicate = conn.execute(
+            "SELECT id,name FROM inventory_items WHERE gastos_product_id=? AND id<>?",
+            (payload.product_id, payload.inventory_id),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(
+                409,
+                f'El producto de Gastos ya está vinculado con "{duplicate["name"]}"',
+            )
+        conn.execute(
+            "UPDATE inventory_items SET gastos_product_id=?,updated_at=? WHERE id=?",
+            (payload.product_id, iso_now(), payload.inventory_id),
+        )
+        log_activity(
+            conn,
+            "inventory_gastos_linked",
+            f'Vinculado "{item["name"]}" con Gastos: {product_name}',
+            entity_type="inventory",
+            entity_id=payload.inventory_id,
+        )
+    return {
+        "ok": True,
+        "inventory_id": payload.inventory_id,
+        "product_id": payload.product_id,
+        "product_name": product_name,
+    }
+
+
+@app.post("/api/gastos/integration-health/link-user")
+def gastos_link_exact_user(payload: ExactUserLinkIn):
+    gastos_user_name = payload.gastos_user_name.strip()
+    lookups = gastos_proxy_call("/api/v1/lookups")
+    users = [str(value).strip() for value in (lookups.get("users") or [])]
+    exact = [value for value in users if value.casefold() == gastos_user_name.casefold()]
+    if len(exact) != 1:
+        raise HTTPException(409, "La coincidencia exacta de usuario ya no es válida")
+    canonical_user = exact[0]
+
+    with db() as conn:
+        person = person_row(conn, payload.person_id)
+        if not person["active"]:
+            raise HTTPException(409, "La persona ya no está activa")
+        if (person["gastos_user_name"] or "").strip():
+            raise HTTPException(409, "La persona ya está vinculada con un usuario de Gastos")
+        if person["name"].strip().casefold() != canonical_user.casefold():
+            raise HTTPException(409, "La coincidencia exacta ya no es válida")
+        duplicate = conn.execute(
+            "SELECT id,name FROM people WHERE gastos_user_name=? AND id<>?",
+            (canonical_user, payload.person_id),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(
+                409,
+                f'El usuario de Gastos "{canonical_user}" ya está vinculado con {duplicate["name"]}',
+            )
+        conn.execute(
+            "UPDATE people SET gastos_user_name=? WHERE id=?",
+            (canonical_user, payload.person_id),
+        )
+        log_activity(
+            conn,
+            "person_gastos_linked",
+            f'Vinculada la persona "{person["name"]}" con Gastos: {canonical_user}',
+            entity_type="person",
+            entity_id=payload.person_id,
+        )
+    return {
+        "ok": True,
+        "person_id": payload.person_id,
+        "gastos_user_name": canonical_user,
     }
 
 

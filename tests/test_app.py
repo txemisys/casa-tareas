@@ -409,6 +409,66 @@ def test_integration_health_reports_exact_matches_without_linking(client, monkey
     assert person["gastos_user_name"] is None
 
 
+def test_exact_integration_links_require_current_exact_match(client, monkeypatch):
+    import app as app_module
+
+    created = client.post(
+        "/api/inventory",
+        json={
+            "name": "Leche",
+            "category": "Alimentación",
+            "stock_status": "ok",
+            "purchase_quantity": "1 unidad",
+        },
+    )
+    assert created.status_code == 200
+    inventory_id = created.json()["id"]
+    jose = next(p for p in get_state(client)["people"] if p["name"] == "Jose")
+
+    def fake_proxy(path, method="GET", payload=None):
+        if path == "/api/v1/products/11":
+            return {"id": 11, "name": "Leche"}
+        if path == "/api/v1/products/12":
+            return {"id": 12, "name": "Pan"}
+        if path == "/api/v1/lookups":
+            return {"articles": [], "users": ["Jose", "Invitado"], "supermarkets": []}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(app_module, "gastos_proxy_call", fake_proxy)
+
+    linked_product = client.post(
+        "/api/gastos/integration-health/link-product",
+        json={"inventory_id": inventory_id, "product_id": 11},
+    )
+    assert linked_product.status_code == 200
+    item = next(x for x in get_state(client)["inventory_all"] if x["id"] == inventory_id)
+    assert item["gastos_product_id"] == 11
+
+    linked_user = client.post(
+        "/api/gastos/integration-health/link-user",
+        json={"person_id": jose["id"], "gastos_user_name": "Jose"},
+    )
+    assert linked_user.status_code == 200
+    person = next(x for x in get_state(client)["people"] if x["id"] == jose["id"])
+    assert person["gastos_user_name"] == "Jose"
+
+    second = client.post(
+        "/api/inventory",
+        json={
+            "name": "Otro",
+            "category": "General",
+            "stock_status": "ok",
+        },
+    )
+    assert second.status_code == 200
+    mismatch = client.post(
+        "/api/gastos/integration-health/link-product",
+        json={"inventory_id": second.json()["id"], "product_id": 12},
+    )
+    assert mismatch.status_code == 409
+    assert "coincidencia exacta" in mismatch.json()["detail"].lower()
+
+
 def test_cannot_delete_last_active_person(client):
     state = get_state(client)
     ids = [p["id"] for p in state["people"]]
@@ -2662,14 +2722,14 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.5.2' in root.text
-    assert '/static/gastos.js?v=1.5.2' in root.text
-    assert '/static/gastos.css?v=1.5.2' in root.text
-    assert '/static/i18n.js?v=1.5.2' in root.text
+    assert '/static/app.js?v=1.5.3' in root.text
+    assert '/static/gastos.js?v=1.5.3' in root.text
+    assert '/static/gastos.css?v=1.5.3' in root.text
+    assert '/static/i18n.js?v=1.5.3' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.5.2")
+    bundle = client.get("/static/app.js?v=1.5.3")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert "function updateHeaderAction()" in bundle.text
@@ -2677,6 +2737,10 @@ def test_frontend_uses_external_script_bundle(client):
     assert "function goShoppingPlan()" in bundle.text
     assert "function integrationHealthPanel()" in bundle.text
     assert '"/api/gastos/integration-health"' in bundle.text
+    assert '"/api/gastos/integration-health/link-product"' in bundle.text
+    assert '"/api/gastos/integration-health/link-user"' in bundle.text
+    assert "function linkExactProduct(" in bundle.text
+    assert "function linkExactUser(" in bundle.text
     assert "Revisar integración" in bundle.text
     assert "Usuario correspondiente en Gastos" in bundle.text
     assert "gastos_user_name" in bundle.text
@@ -2686,7 +2750,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert "app-state-error" in root.text
     assert 'grid-template-columns:repeat(5,1fr)' in root.text
     assert 'id="headerPrimary"' in root.text
-    i18n = client.get("/static/i18n.js?v=1.5.2")
+    i18n = client.get("/static/i18n.js?v=1.5.3")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2718,7 +2782,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.5.2")
+    gastos_bundle = client.get("/static/gastos.js?v=1.5.3")
     assert gastos_bundle.status_code == 200
     assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
@@ -3103,7 +3167,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.5.2")
+    bundle = client.get("/static/app.js?v=1.5.3")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text

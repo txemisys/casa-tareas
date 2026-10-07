@@ -507,6 +507,13 @@ Object.assign(DE,{
 "Solo se muestran nombres idénticos; no se enlaza nada automáticamente.":"Es werden nur identische Namen angezeigt; nichts wird automatisch verknüpft.","Abrir personas":"Personen öffnen"
 });
 
+Object.assign(EN,{
+"Vincular":"Link","Producto vinculado con Gastos":"Product linked with Expenses","Persona vinculada con Gastos":"Person linked with Expenses"
+});
+Object.assign(DE,{
+"Vincular":"Verknüpfen","Producto vinculado con Gastos":"Produkt mit Ausgaben verknüpft","Persona vinculada con Gastos":"Person mit Ausgaben verknüpft"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
