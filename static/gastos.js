@@ -69,17 +69,25 @@ function renderGastosSummary(){
   if(shopping.length&&typeof loadShoppingPlan==="function")loadShoppingPlan(false);
   var planGroups=(shoppingPlan&&shoppingPlan.groups)||[];
   var totalSaving=Number((shoppingPlan&&shoppingPlan.estimated_saving_unit_total)||0);
+  var basketCount=Number((shoppingPlan&&shoppingPlan.basket_priced_count)||0);
+  var basketTotal=Number((shoppingPlan&&shoppingPlan.estimated_basket_total)||0);
+  var basketSaving=Number((shoppingPlan&&shoppingPlan.estimated_basket_saving)||0);
   var shoppingBody="";
   if(!shopping.length){
     shoppingBody='<div class="gastos-empty">La lista de compra está vacía.</div>';
   }else if(planGroups.length){
-    var savingBanner=totalSaving>0?'<div class="gastos-ticket"><div class="gastos-ticket-title">💶 Ahorro estimado · '+esc(gastosMoney(totalSaving))+'/u.</div><div class="gastos-ticket-meta">Comparación contra el precio medio del supermercado habitual para los productos con histórico comparable. No representa todavía el total real de la cesta.</div></div>':"";
+    var savingBanner="";
+    if(basketCount>0){
+      savingBanner='<div class="gastos-ticket"><div class="gastos-ticket-title">🧺 Cesta estimada · '+esc(gastosMoney(basketTotal))+(basketSaving>0?' · ahorro '+esc(gastosMoney(basketSaving)):'')+'</div><div class="gastos-ticket-meta">'+((shoppingPlan&&shoppingPlan.basket_complete)?'Cálculo completo con las cantidades interpretables de la lista.':'Cálculo parcial: '+basketCount+' de '+shopping.length+' productos tienen cantidad y precio comparables.')+'</div></div>';
+    }else if(totalSaving>0){
+      savingBanner='<div class="gastos-ticket"><div class="gastos-ticket-title">💶 Ahorro estimado · '+esc(gastosMoney(totalSaving))+'/u.</div><div class="gastos-ticket-meta">No hay cantidades suficientemente claras para calcular un total de cesta.</div></div>';
+    }
     shoppingBody=savingBanner+'<div class="gastos-ticket-list">'+planGroups.map(function(group){
-      var groupSaving=Number(group.estimated_saving_unit_total||0);
-      return '<article class="gastos-ticket"><div class="gastos-ticket-top"><div><div class="gastos-ticket-title">🛒 '+esc(group.supermarket)+'</div><div class="gastos-ticket-meta">'+group.count+' producto'+(group.count===1?"":"s")+(group.priced_count?' · aprox. '+esc(gastosMoney(group.estimated_unit_total))+' base/u.':'')+(groupSaving>0?' · ahorro aprox. '+esc(gastosMoney(groupSaving))+'/u.':'')+'</div></div></div><div class="gastos-ticket-items">'+group.items.map(function(item){
-        var rec=item.recommended_supermarket,last=item.last_purchase,saving=Number(item.estimated_saving_unit||0),rp=rec?(rec.recommendation_unit_price!=null?rec.recommendation_unit_price:rec.average_unit_price):null;
+      var groupSaving=Number(group.estimated_saving_unit_total||0),groupBasket=Number(group.estimated_basket_total||0);
+      return '<article class="gastos-ticket"><div class="gastos-ticket-top"><div><div class="gastos-ticket-title">🛒 '+esc(group.supermarket)+'</div><div class="gastos-ticket-meta">'+group.count+' producto'+(group.count===1?"":"s")+(group.basket_priced_count?' · cesta aprox. '+esc(gastosMoney(groupBasket)):(group.priced_count?' · aprox. '+esc(gastosMoney(group.estimated_unit_total))+' base/u.':''))+(groupSaving>0&&!group.basket_priced_count?' · ahorro aprox. '+esc(gastosMoney(groupSaving))+'/u.':'')+'</div></div></div><div class="gastos-ticket-items">'+group.items.map(function(item){
+        var rec=item.recommended_supermarket,last=item.last_purchase,saving=Number(item.estimated_saving_unit||0),rp=rec?(rec.recommendation_unit_price!=null?rec.recommendation_unit_price:rec.average_unit_price):null,line=item.estimated_line_total;
         var confidence=item.recommendation_confidence?(' · confianza '+(item.recommendation_confidence==="high"?"alta":item.recommendation_confidence==="medium"?"media":"baja")):"";
-        return '<div class="gastos-ticket-item"><div><strong>'+esc(item.name)+'</strong><div class="muted">'+esc(item.purchase_quantity||item.category||"")+(item.gastos_product_id?' · vinculado':' · sin vincular')+confidence+(saving>0?' · ahorra aprox. '+esc(gastosMoney(saving))+'/u.':'')+'</div></div><div class="muted">'+(rp!=null?'Precio recomendado '+esc(gastosMoney(rp))+'/u.':(last&&last.unit_price!=null?'Último '+esc(gastosMoney(last.unit_price))+'/u.':'Sin precio histórico'))+'</div></div>';
+        return '<div class="gastos-ticket-item"><div><strong>'+esc(item.name)+'</strong><div class="muted">'+esc(item.purchase_quantity||item.category||"")+(item.gastos_product_id?' · vinculado':' · sin vincular')+confidence+(line!=null?' · total aprox. '+esc(gastosMoney(line)):(saving>0?' · ahorra aprox. '+esc(gastosMoney(saving))+'/u.':''))+'</div></div><div class="muted">'+(rp!=null?'Precio recomendado '+esc(gastosMoney(rp))+'/u.':(last&&last.unit_price!=null?'Último '+esc(gastosMoney(last.unit_price))+'/u.':'Sin precio histórico'))+'</div></div>';
       }).join("")+'</div></article>';
     }).join("")+'</div>';
   }else{
