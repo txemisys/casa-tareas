@@ -397,6 +397,20 @@ Object.assign(DE,{
 "Ropa y textil":"Wäsche und Textilien","Limpieza y mantenimiento":"Reinigung und Instandhaltung","Vehículos":"Fahrzeuge"
 });
 
+
+Object.assign(EN,{
+"Confianza alta":"High confidence","Confianza media":"Medium confidence","Confianza baja":"Low confidence",
+"confianza alta":"high confidence","confianza media":"medium confidence","confianza baja":"low confidence",
+"Precio recomendado":"Recommended price","Precio recomendación/u.":"Recommendation price/unit","Recientes":"Recent","Confianza":"Confidence",
+"Precio reciente ponderado, muestras y última compra registrada.":"Recency-weighted price, sample count and latest recorded purchase."
+});
+Object.assign(DE,{
+"Confianza alta":"Hohe Sicherheit","Confianza media":"Mittlere Sicherheit","Confianza baja":"Geringe Sicherheit",
+"confianza alta":"hohe Sicherheit","confianza media":"mittlere Sicherheit","confianza baja":"geringe Sicherheit",
+"Precio recomendado":"Empfohlener Preis","Precio recomendación/u.":"Empfehlungspreis/Einheit","Recientes":"Aktuell","Confianza":"Sicherheit",
+"Precio reciente ponderado, muestras y última compra registrada.":"Nach Aktualität gewichteter Preis, Stichprobenzahl und letzter erfasster Einkauf."
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
