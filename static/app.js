@@ -83,6 +83,37 @@ async function resumeArea(id){try{await api("/api/areas/"+id+"/resume",{method:"
 function completedCard(x){var can=!!x.can_undo_to_today;var drag=can?' draggable="true" data-origin="done" data-id="'+x.task_id+'" data-completion-id="'+x.id+'"':'';var action=can?'<button class="ghost" onclick="undoCompletionToToday('+x.id+')">↶ Volver a Hoy</button>':'';return '<div class="done-card"'+drag+'><div class="icon">'+esc(x.icon)+'</div><div><div class="title">'+esc(uiText(x.title))+'</div><div class="muted">'+new Date(x.completed_at).toLocaleString(typeof appLocale==="function"?appLocale():"es-ES")+' · '+esc(x.name)+'</div></div><div class="done-actions"><div class="avatar" style="background:'+esc(x.color)+'">'+esc(x.person_icon)+'</div>'+action+'</div></div>'}
 async function undoCompletionToToday(completionId){try{var r=await api("/api/completions/"+completionId+"/undo-to-today",{method:"POST"});view="board";await load();showUndo('Realización deshecha · "'+(r.task_title||"Tarea")+'" vuelve a Hoy',null)}catch(e){alert(e.message)}}
 
+function householdDataAlertsPanel(){
+  if(!homeGastosLoaded&&!integrationHealthLoaded)return"";
+  var alerts=[];
+  if(homeGastosSummary){
+    var unlinkedTotal=Number(homeGastosSummary.unlinked_user_total||0),unlinkedUsers=homeGastosSummary.unlinked_user_spending||[];
+    if(unlinkedTotal>0){
+      var names=unlinkedUsers.slice(0,3).map(function(x){return x.user_name}).join(", ");
+      alerts.push({level:"warn",icon:"👤",title:"Gasto sin persona vinculada",detail:(typeof gastosMoney==="function"?gastosMoney(unlinkedTotal):unlinkedTotal.toFixed(2)+" €")+(names?" · "+names:""),action:"people",label:"Vincular personas"});
+    }
+  }
+  if(integrationHealth){
+    var inv=integrationHealth.inventory||{},people=integrationHealth.people||{};
+    var staleProducts=inv.stale_links||[],staleUsers=people.stale_links||[];
+    var productSuggestions=inv.exact_match_suggestions||[],userSuggestions=people.exact_match_suggestions||[];
+    if(staleProducts.length||staleUsers.length){
+      var staleParts=[];
+      if(staleProducts.length)staleParts.push(staleProducts.length+" "+uiText(staleProducts.length===1?"producto con vínculo obsoleto":"productos con vínculo obsoleto"));
+      if(staleUsers.length)staleParts.push(staleUsers.length+" "+uiText(staleUsers.length===1?"persona con vínculo obsoleto":"personas con vínculo obsoleto"));
+      alerts.push({level:"danger",icon:"⚠️",title:"Vínculos que requieren revisión",detail:staleParts.join(" · "),action:"settings",label:"Revisar integración"});
+    }
+    if(productSuggestions.length||userSuggestions.length){
+      var suggestionParts=[];
+      if(productSuggestions.length)suggestionParts.push(productSuggestions.length+" producto"+(productSuggestions.length===1?"":"s"));
+      if(userSuggestions.length)suggestionParts.push(userSuggestions.length+" persona"+(userSuggestions.length===1?"":"s"));
+      alerts.push({level:"info",icon:"🔗",title:"Coincidencias exactas disponibles",detail:suggestionParts.join(" · ")+" · no se enlaza nada automáticamente",action:"settings",label:"Revisar integración"});
+    }
+  }
+  if(!alerts.length)return"";
+  return '<section class="household-alerts"><div class="household-alerts-head"><div><strong>⚠️ '+esc(uiText("Requiere atención"))+'</strong><div class="muted">'+esc(uiText("Solo mostramos incidencias accionables; no se modifica ningún dato automáticamente."))+'</div></div><span class="household-alert-count">'+alerts.length+'</span></div><div class="household-alert-list">'+alerts.map(function(a){return'<div class="household-alert household-alert-'+esc(a.level)+'"><div class="household-alert-icon">'+a.icon+'</div><div><strong>'+esc(uiText(a.title))+'</strong><div class="muted">'+esc(a.detail)+'</div></div><button class="ghost" onclick="go(\''+a.action+'\')">'+esc(uiText(a.label))+'</button></div>'}).join("")+'</div></section>';
+}
+
 function householdOverviewPanel(){
   var shopping=(state.shopping_list||[]).length;
   var blocked=(state.tasks||[]).filter(function(t){return t.active&&t.blocked_by_supplies}).length;
@@ -127,12 +158,12 @@ async function loadHomeGastosSummary(){
   if(view==="board")renderBoard();
 }
 
-function renderBoard(){var recent=state.history.slice(0,8);var all=state.tasks.filter(function(t){return t.active});var upcomingEvents=state.event_upcoming||[];var todayEvents=state.event_today||[];var h='<div class="pagehead"><div><h1>Tablero</h1><div class="subtitle">Tareas y agenda doméstica en un mismo vistazo.</div></div><button class="primary" onclick="openTask()">+ Nueva tarea</button></div>'+householdOverviewPanel()+activityPanel()+vacationPanel()+suggestionsPanel()+'<div class="mobile-board-nav"><button aria-label="Columna anterior" onclick="moveBoard(-1)">←</button><div class="mobile-board-meta"><strong id="mobileBoardLabel">Hoy</strong><span id="mobileBoardPos">3 / 4</span></div><button aria-label="Columna siguiente" onclick="moveBoard(1)">→</button></div><div class="kanban" id="kanbanBoard">';
+function renderBoard(){var recent=state.history.slice(0,8);var all=state.tasks.filter(function(t){return t.active});var upcomingEvents=state.event_upcoming||[];var todayEvents=state.event_today||[];var h='<div class="pagehead"><div><h1>Tablero</h1><div class="subtitle">Tareas y agenda doméstica en un mismo vistazo.</div></div><button class="primary" onclick="openTask()">+ Nueva tarea</button></div>'+householdDataAlertsPanel()+householdOverviewPanel()+activityPanel()+vacationPanel()+suggestionsPanel()+'<div class="mobile-board-nav"><button aria-label="Columna anterior" onclick="moveBoard(-1)">←</button><div class="mobile-board-meta"><strong id="mobileBoardLabel">Hoy</strong><span id="mobileBoardPos">3 / 4</span></div><button aria-label="Columna siguiente" onclick="moveBoard(1)">→</button></div><div class="kanban" id="kanbanBoard">';
 h+='<section class="kanban-col" id="col-all" data-drop="all"><div class="kanban-head"><div><div class="kanban-title">Todas las tareas</div><div class="drag-hint">Catálogo activo · usa + Hoy para añadir</div></div><span class="kanban-count">'+all.length+'</span></div><div class="kanban-list">'+(all.length?all.map(function(t){return boardCard(t,"all")}).join(""):'<div class="kanban-empty">No hay tareas activas.</div>')+'</div></section>';
 h+='<section class="kanban-col" id="col-upcoming" data-drop="upcoming"><div class="kanban-head"><div><div class="kanban-title">Próximamente</div><div class="drag-hint">Arrastra aquí desde Hoy para corregir una selección</div></div><span class="kanban-count">'+(state.upcoming.length+upcomingEvents.length)+'</span></div><div class="kanban-list">'+upcomingEvents.map(function(e){return eventCard(e,true)}).join("")+(state.upcoming.length?state.upcoming.map(function(t){return boardCard(t,"upcoming")}).join(""):(upcomingEvents.length?"":'<div class="kanban-empty">No hay nada próximo.</div>'))+'</div></section>';
 h+='<section class="kanban-col" id="col-today" data-drop="today"><div class="kanban-head"><div><div class="kanban-title">Hoy</div><div class="drag-hint">Arrastra a Próximamente para quitar de Hoy</div></div><span class="kanban-count">'+(state.today.length+todayEvents.length)+'</span></div><div class="kanban-list">'+todayEvents.map(function(e){return eventCard(e,true)}).join("")+(state.today.length?state.today.map(function(t){return boardCard(t,"today")}).join(""):(todayEvents.length?"":'<div class="kanban-empty">🎉 Nada pendiente para hoy.</div>'))+'</div></section>';
 h+='<section class="kanban-col" id="col-done" data-drop="done"><div class="kanban-head"><div><div class="kanban-title">Realizadas</div><div class="drag-hint">Arrastra una realización reversible a Hoy para corregirla</div></div><span class="kanban-count">'+recent.length+'</span></div><div class="kanban-list">'+(recent.length?recent.map(completedCard).join(""):'<div class="kanban-empty">Aún no hay tareas realizadas.</div>')+'</div></section></div>';
-document.getElementById("main").innerHTML=h;bindBoardDrag();initMobileBoard();loadHomeGastosSummary();if((state.shopping_list||[]).length)loadShoppingPlan(false)}
+document.getElementById("main").innerHTML=h;bindBoardDrag();initMobileBoard();loadHomeGastosSummary();if(!integrationHealthLoaded&&!integrationHealthLoading)loadIntegrationHealth();if((state.shopping_list||[]).length)loadShoppingPlan(false)}
 
 function renderToday(){var h='<div class="pagehead"><div><h1>Hoy</h1><div class="subtitle">Una cola pequeña para lo que toca ahora.</div></div><button class="primary" onclick="openTask()">+ Añadir</button></div>';
 h+=state.today.length?'<div class="grid">'+state.today.map(function(t){return card(t,"today")}).join("")+"</div>":'<div class="empty">🎉 No hay tareas en la cola de hoy.</div>';
@@ -248,6 +279,7 @@ async function loadIntegrationHealth(){
   catch(e){integrationHealth=null;integrationHealthError=e.message||String(e)}
   integrationHealthLoading=false;
   if(view==="settings")renderSettings();
+  if(view==="board")renderBoard();
 }
 
 async function linkExactProduct(inventoryId,productId){
