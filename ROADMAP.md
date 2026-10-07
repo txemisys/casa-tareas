@@ -86,15 +86,15 @@ Opciones a evaluar:
 - [x] Reconciliar también PUT/edición de ticket.
 - [x] Evitar dobles reposiciones o efectos repetidos.
 
-### 4. Paridad y mejora del gráfico — PRIORIDAD ACTUAL
-- [ ] Tooltips.
-- [ ] Valores al pasar el cursor.
-- [ ] Leyenda más clara.
-- [ ] Comparación entre usuarios.
-- [ ] Mejor experiencia móvil.
-- [ ] Verificar que ninguna función útil del gráfico standalone se pierde.
+### 4. Paridad y mejora del gráfico — COMPLETADO
+- [x] Tooltips.
+- [x] Valores al pasar el cursor.
+- [x] Leyenda más clara.
+- [x] Comparación entre usuarios.
+- [x] Mejor experiencia móvil.
+- [x] Verificar que ninguna función útil del gráfico standalone se pierde.
 
-### 5. Pulido de navegación y UX
+### 5. Pulido de navegación y UX — PRIORIDAD ACTUAL
 - [ ] Botón principal contextual: Nueva tarea / Nuevo ticket / Nuevo producto según sección.
 - [ ] Revisar navegación móvil con muchas pestañas.
 - [ ] Atajos Inventario ↔ Gastos ↔ Plan de compra.
@@ -141,4 +141,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es el hito 4: mejorar la paridad del gráfico integrado de Gastos empezando por tooltips/valores interactivos, leyenda más clara, comparación entre usuarios y revisión móvil.
+La siguiente tarea es el hito 5: pulir navegación y UX, empezando por botón principal contextual, navegación móvil y atajos entre Inventario, Gastos y Plan de compra.
