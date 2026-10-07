@@ -3039,11 +3039,17 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
                 "recommended_supermarket": {
                     "supermarket": "Migros",
                     "average_unit_price": 1.8,
+                    "recommendation_unit_price": 1.75,
                 },
                 "habitual_supermarket": {
                     "supermarket": "Coop",
                     "purchase_count": 4,
                     "average_unit_price": 2.1,
+                    "recommendation_unit_price": 2.0,
+                },
+                "recommendation": {
+                    "confidence": "medium",
+                    "reason": "best_recent_value",
                 },
                 "average_unit_price": 1.9,
                 "last_purchase": {
@@ -3057,11 +3063,17 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
                 "recommended_supermarket": {
                     "supermarket": "Migros",
                     "average_unit_price": 7.5,
+                    "recommendation_unit_price": 7.4,
                 },
                 "habitual_supermarket": {
                     "supermarket": "Migros",
                     "purchase_count": 3,
                     "average_unit_price": 7.5,
+                    "recommendation_unit_price": 7.4,
+                },
+                "recommendation": {
+                    "confidence": "high",
+                    "reason": "habitual_is_best",
                 },
                 "average_unit_price": 7.8,
                 "last_purchase": {
@@ -3087,19 +3099,21 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
     migros = data["groups"][0]
     assert migros["count"] == 2
     assert migros["priced_count"] == 2
-    assert migros["estimated_unit_total"] == 9.3
-    assert migros["estimated_baseline_unit_total"] == 9.6
-    assert migros["estimated_saving_unit_total"] == 0.3
+    assert migros["estimated_unit_total"] == 9.15
+    assert migros["estimated_baseline_unit_total"] == 9.4
+    assert migros["estimated_saving_unit_total"] == 0.25
     assert migros["comparable_count"] == 2
     assert migros["savings_count"] == 1
-    assert data["estimated_saving_unit_total"] == 0.3
+    assert data["estimated_saving_unit_total"] == 0.25
     assert data["savings_count"] == 1
     assert {item["name"] for item in migros["items"]} == {"Leche", "Café"}
     leche = next(item for item in migros["items"] if item["name"] == "Leche")
-    assert leche["recommended_unit_price"] == 1.8
-    assert leche["habitual_unit_price"] == 2.1
-    assert leche["estimated_saving_unit"] == 0.3
-    assert leche["estimated_saving_percent"] == 14.3
+    assert leche["recommended_unit_price"] == 1.75
+    assert leche["habitual_unit_price"] == 2.0
+    assert leche["estimated_saving_unit"] == 0.25
+    assert leche["estimated_saving_percent"] == 12.5
+    assert leche["recommendation_confidence"] == "medium"
+    assert leche["recommendation_reason"] == "best_recent_value"
 
 
 def test_shopping_task_is_identified_for_supermarket_plan_display(client):
