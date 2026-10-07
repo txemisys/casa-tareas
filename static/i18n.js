@@ -490,6 +490,23 @@ Object.assign(DE,{
 "ya vinculado":"bereits verknüpft"
 });
 
+Object.assign(EN,{
+"Revisar integración":"Check integration","Revisando integración…":"Checking integration…","No se pudo revisar la integración":"Could not check integration",
+"Estado de integración":"Integration status","Comprueba vínculos entre Casa Tareas y Gastos sin modificar datos.":"Checks links between Casa Tareas and Expenses without changing data.",
+"Requiere atención":"Needs attention","Hay coincidencias por revisar":"Matches to review","Correcta":"Healthy",
+"Inventario vinculado":"Linked inventory","Personas vinculadas":"Linked people","Productos en Gastos":"Products in Expenses","Usuarios de Gastos vinculados":"Linked Expenses users",
+"Vínculos que requieren atención":"Links needing attention","Coincidencias exactas disponibles":"Exact matches available",
+"Solo se muestran nombres idénticos; no se enlaza nada automáticamente.":"Only identical names are shown; nothing is linked automatically.","Abrir personas":"Open people"
+});
+Object.assign(DE,{
+"Revisar integración":"Integration prüfen","Revisando integración…":"Integration wird geprüft…","No se pudo revisar la integración":"Integration konnte nicht geprüft werden",
+"Estado de integración":"Integrationsstatus","Comprueba vínculos entre Casa Tareas y Gastos sin modificar datos.":"Prüft Verknüpfungen zwischen Casa Tareas und Ausgaben, ohne Daten zu ändern.",
+"Requiere atención":"Aufmerksamkeit erforderlich","Hay coincidencias por revisar":"Übereinstimmungen prüfen","Correcta":"In Ordnung",
+"Inventario vinculado":"Verknüpftes Inventar","Personas vinculadas":"Verknüpfte Personen","Productos en Gastos":"Produkte in Ausgaben","Usuarios de Gastos vinculados":"Verknüpfte Ausgaben-Benutzer",
+"Vínculos que requieren atención":"Verknüpfungen mit Handlungsbedarf","Coincidencias exactas disponibles":"Exakte Übereinstimmungen verfügbar",
+"Solo se muestran nombres idénticos; no se enlaza nada automáticamente.":"Es werden nur identische Namen angezeigt; nichts wird automatisch verknüpft.","Abrir personas":"Personen öffnen"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
