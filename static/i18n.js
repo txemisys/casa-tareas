@@ -411,6 +411,20 @@ Object.assign(DE,{
 "Precio reciente ponderado, muestras y última compra registrada.":"Nach Aktualität gewichteter Preis, Stichprobenzahl und letzter erfasster Einkauf."
 });
 
+
+Object.assign(EN,{
+"Cesta estimada":"Estimated basket","Cesta":"Basket","Cálculo parcial":"Partial estimate",
+"Cálculo completo con las cantidades interpretables de la lista.":"Complete estimate using the interpretable quantities in the list.",
+"No hay cantidades suficientemente claras para calcular la cesta.":"There are not enough clear quantities to calculate the basket.",
+"No hay cantidades suficientemente claras para calcular un total de cesta.":"There are not enough clear quantities to calculate a basket total."
+});
+Object.assign(DE,{
+"Cesta estimada":"Geschätzter Warenkorb","Cesta":"Warenkorb","Cálculo parcial":"Teilschätzung",
+"Cálculo completo con las cantidades interpretables de la lista.":"Vollständige Schätzung mit den eindeutig interpretierbaren Mengen der Liste.",
+"No hay cantidades suficientemente claras para calcular la cesta.":"Es gibt nicht genügend eindeutige Mengen, um den Warenkorb zu berechnen.",
+"No hay cantidades suficientemente claras para calcular un total de cesta.":"Es gibt nicht genügend eindeutige Mengen, um einen Warenkorb-Gesamtbetrag zu berechnen."
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
@@ -458,6 +472,28 @@ de:[
 [/^Creada "Hacer la compra" · (\d+) producto\(s\)$/,'"Einkaufen gehen" erstellt · $1 Produkt(e)'],[/^Reactivada "Hacer la compra" · (\d+) producto\(s\)$/,'"Einkaufen gehen" reaktiviert · $1 Produkt(e)'],
 [/^Modo vacaciones hasta (.+)$/,"Urlaubsmodus bis $1"],[/^Ticket #(\d+)$/,"Beleg #$1"],[/^(\d+) producto(?:s)? · (.+)$/,"$1 Produkt(e) · $2"]
 ]};
+
+
+dynamic.en.push(
+ [/^Cesta estimada: (.+)$/,"Estimated basket: $1"],
+ [/^Cesta ≈ (.+)$/,"Basket ≈ $1"],
+ [/^cesta aprox\. (.+)$/,"approx. basket $1"],
+ [/^total aprox\. (.+)$/,"approx. total $1"],
+ [/^ahorro estimado (.+)$/,"estimated saving $1"],
+ [/^ahorro (.+)$/,"saving $1"],
+ [/^Cálculo parcial: (\d+) de (\d+) productos tienen cantidad y precio comparables\.$/,"Partial estimate: $1 of $2 products have comparable quantity and price."],
+ [/^cálculo parcial: (\d+) de (\d+) productos$/,"partial estimate: $1 of $2 products"]
+);
+dynamic.de.push(
+ [/^Cesta estimada: (.+)$/,"Geschätzter Warenkorb: $1"],
+ [/^Cesta ≈ (.+)$/,"Warenkorb ≈ $1"],
+ [/^cesta aprox\. (.+)$/,"Warenkorb ca. $1"],
+ [/^total aprox\. (.+)$/,"Gesamt ca. $1"],
+ [/^ahorro estimado (.+)$/,"geschätzte Ersparnis $1"],
+ [/^ahorro (.+)$/,"Ersparnis $1"],
+ [/^Cálculo parcial: (\d+) de (\d+) productos tienen cantidad y precio comparables\.$/,"Teilschätzung: $1 von $2 Produkten haben vergleichbare Menge und Preis."],
+ [/^cálculo parcial: (\d+) de (\d+) productos$/,"Teilschätzung: $1 von $2 Produkten"]
+);
 
 var alertExact={
 en:{
