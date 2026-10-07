@@ -63,19 +63,19 @@ Criterio de aceptación:
 - La UI debe distinguir recomendación fuerte, moderada o débil.
 - El ahorro mostrado debe usar el mismo criterio que la recomendación.
 
-### 2. Estimación real de cesta y cantidades — PRIORIDAD ACTUAL
+### 2. Estimación real de cesta y cantidades — COMPLETADO
 Objetivo: pasar de €/u aproximado a un total de compra útil.
 
 Pendiente:
-- [ ] Normalizar cantidades cuando sean interpretables con seguridad.
-- [ ] Soportar formatos claros como “2 unidades”, “3 botellas”, “1.5 kg”.
-- [ ] No inventar conversiones cuando las unidades sean ambiguas.
-- [ ] Conservar purchase_quantity original.
-- [ ] Mostrar total de cesta solo cuando haya cobertura suficiente.
-- [ ] Mostrar qué productos quedan fuera del cálculo.
-- [ ] Tests de cantidades y unidades.
+- [x] Normalizar cantidades cuando sean interpretables con seguridad.
+- [x] Soportar formatos claros como “2 unidades”, “3 botellas”, “1.5 kg”.
+- [x] No inventar conversiones cuando las unidades sean ambiguas.
+- [x] Conservar purchase_quantity original.
+- [x] Mostrar total de cesta solo cuando haya cobertura suficiente.
+- [x] Mostrar qué productos quedan fuera del cálculo.
+- [x] Tests de cantidades y unidades.
 
-### 3. Sincronización más profunda desde Gastos standalone
+### 3. Sincronización más profunda desde Gastos standalone — PRIORIDAD ACTUAL
 Objetivo: que Casa se actualice aunque un ticket se cree o edite directamente en :8000.
 
 Opciones a evaluar:
@@ -140,4 +140,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es el hito 2: normalizar purchase_quantity de forma conservadora y calcular un total de cesta solo cuando la cantidad sea interpretable con seguridad. Si la cobertura es parcial, la UI debe indicarlo explícitamente.
+La siguiente tarea es el hito 3: sincronizar compras creadas o editadas directamente en Gastos standalone con el inventario de Casa, de forma incremental e idempotente.
