@@ -2535,6 +2535,8 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
+    assert 'syncGastosNow' in bundle.text
+    assert 'Sincronizar ahora' in bundle.text
     assert 'api("/api/state")' in bundle.text
 
 
