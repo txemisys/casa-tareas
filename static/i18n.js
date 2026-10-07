@@ -447,6 +447,18 @@ Object.assign(DE,{
 "Mostrar serie":"Reihe anzeigen","Ocultar serie":"Reihe ausblenden"
 });
 
+
+Object.assign(EN,{
+"Más":"More","Administración y opciones de Casa Tareas.":"Casa Tareas administration and options.",
+"Ver plan de compra":"View shopping plan","Abrir inventario":"Open inventory","Abrir Gastos":"Open Expenses",
+"Nuevo producto":"New product","Nuevo evento":"New event","Nueva área":"New area","Nueva persona":"New person","Nuevo ticket":"New receipt"
+});
+Object.assign(DE,{
+"Más":"Mehr","Administración y opciones de Casa Tareas.":"Verwaltung und Optionen von Casa Tareas.",
+"Ver plan de compra":"Einkaufsplan anzeigen","Abrir inventario":"Inventar öffnen","Abrir Gastos":"Ausgaben öffnen",
+"Nuevo producto":"Neues Produkt","Nuevo evento":"Neuer Termin","Nueva área":"Neuer Bereich","Nueva persona":"Neue Person","Nuevo ticket":"Neuer Beleg"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
