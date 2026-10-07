@@ -122,11 +122,17 @@ function shoppingPlanPanel(){
   if(!shoppingPlanLoaded)return'<section class="inventory-panel"><div class="section">🧭 Plan de compra</div><div class="empty">'+(shoppingPlanLoading?"Calculando supermercados…":"Cargando recomendaciones…")+'</div></section>';
   if(!shoppingPlan||!(shoppingPlan.groups||[]).length)return"";
   var totalSaving=Number(shoppingPlan.estimated_saving_unit_total||0);
-  var savingSummary=totalSaving>0?'<div class="shopping-required"><strong>Ahorro estimado siguiendo las recomendaciones: '+esc(typeof gastosMoney==="function"?gastosMoney(totalSaving):totalSaving.toFixed(2)+" €")+'/u.</strong> Basado en el precio medio del supermercado habitual; no es todavía un total real de cesta.</div>':"";
-  return '<section class="inventory-panel"><div class="section">🧭 Plan de compra por supermercado</div>'+savingSummary+'<div class="inventory-list">'+shoppingPlan.groups.map(function(g){
-    var est=typeof gastosMoney==="function"?gastosMoney(g.estimated_unit_total):Number(g.estimated_unit_total).toFixed(2)+" €";
-    var save=typeof gastosMoney==="function"?gastosMoney(g.estimated_saving_unit_total||0):Number(g.estimated_saving_unit_total||0).toFixed(2)+" €";
-    return '<div class="shopping-card"><div><strong>'+esc(g.supermarket)+'</strong><span class="pill">'+g.count+' producto'+(g.count===1?"":"s")+'</span>'+(g.priced_count?'<span class="pill">≈ '+esc(est)+' base/u.</span>':"")+(Number(g.estimated_saving_unit_total||0)>0?'<span class="pill">Ahorro ≈ '+esc(save)+'/u.</span>':"")+'</div><div class="shopping-required">'+g.items.map(function(x){var saving=Number(x.estimated_saving_unit||0);return esc(x.name)+(x.purchase_quantity?' · '+esc(x.purchase_quantity):"")+(saving>0?' · ahorra aprox. '+esc(typeof gastosMoney==="function"?gastosMoney(saving):saving.toFixed(2)+" €")+'/u.':"")}).join("<br>")+'</div></div>';
+  var basketCount=Number(shoppingPlan.basket_priced_count||0),basketTotal=Number(shoppingPlan.estimated_basket_total||0),basketSaving=Number(shoppingPlan.estimated_basket_saving||0);
+  var money=function(v){return typeof gastosMoney==="function"?gastosMoney(v):Number(v).toFixed(2)+" €"};
+  var basketSummary="";
+  if(basketCount>0){
+    basketSummary='<div class="shopping-required"><strong>Cesta estimada: '+esc(money(basketTotal))+'</strong>'+(basketSaving>0?' · ahorro estimado '+esc(money(basketSaving)):'')+(shoppingPlan.basket_complete?'':' · cálculo parcial: '+basketCount+' de '+shoppingPlan.count+' productos')+'.</div>';
+  }else if(totalSaving>0){
+    basketSummary='<div class="shopping-required"><strong>Ahorro estimado siguiendo las recomendaciones: '+esc(money(totalSaving))+'/u.</strong> No hay cantidades suficientemente claras para calcular la cesta.</div>';
+  }
+  return '<section class="inventory-panel"><div class="section">🧭 Plan de compra por supermercado</div>'+basketSummary+'<div class="inventory-list">'+shoppingPlan.groups.map(function(g){
+    var est=money(g.estimated_unit_total),save=money(g.estimated_saving_unit_total||0),basket=money(g.estimated_basket_total||0);
+    return '<div class="shopping-card"><div><strong>'+esc(g.supermarket)+'</strong><span class="pill">'+g.count+' producto'+(g.count===1?"":"s")+'</span>'+(g.basket_priced_count?'<span class="pill">Cesta ≈ '+esc(basket)+'</span>':(g.priced_count?'<span class="pill">≈ '+esc(est)+' base/u.</span>':""))+(Number(g.estimated_saving_unit_total||0)>0&&!g.basket_priced_count?'<span class="pill">Ahorro ≈ '+esc(save)+'/u.</span>':"")+'</div><div class="shopping-required">'+g.items.map(function(x){var saving=Number(x.estimated_saving_unit||0),line=x.estimated_line_total;return esc(x.name)+(x.purchase_quantity?' · '+esc(x.purchase_quantity):"")+(line!=null?' · ≈ '+esc(money(line)):(saving>0?' · ahorra aprox. '+esc(money(saving))+'/u.':""))}).join("<br>")+'</div></div>';
   }).join("")+'</div></section>';
 }
 async function loadShoppingPlan(force){
