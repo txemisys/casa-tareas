@@ -3002,6 +3002,122 @@ def test_home_summary_combines_current_and_previous_month_spending(client, monke
     assert data["change_percent"] == 20.0
 
 
+def test_incremental_gastos_sync_bootstraps_then_reconciles_new_changes(client, monkeypatch):
+    import app as app_module
+
+    saved = client.put(
+        "/api/settings/gastos-comida",
+        json={"url": "http://gastos-comida:8000"},
+    )
+    assert saved.status_code == 200
+
+    item = client.post(
+        "/api/inventory",
+        json={
+            "name": "Leche",
+            "category": "Alimentación",
+            "stock_status": "out",
+            "gastos_product_id": 10,
+        },
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    calls = []
+
+    def fake_request(conn, path, method="GET", payload=None):
+        calls.append(path)
+        if "latest=1" in path:
+            return {
+                "items": [],
+                "count": 0,
+                "cursor": {
+                    "updated_at": "2026-10-01T10:00:00.000000",
+                    "ticket_id": 4,
+                },
+                "has_more": False,
+            }
+        if "/api/v1/purchases/changes?" in path:
+            if len([p for p in calls if "/api/v1/purchases/changes?" in p and "latest=1" not in p]) == 1:
+                return {
+                    "items": [
+                        {
+                            "id": 5,
+                            "date": "2026-10-02",
+                            "supermarket": "Migros",
+                            "items": [
+                                {
+                                    "product_id": 10,
+                                    "article": "Leche",
+                                    "quantity": 2,
+                                    "total": 3.6,
+                                }
+                            ],
+                        }
+                    ],
+                    "count": 1,
+                    "cursor": {
+                        "updated_at": "2026-10-02T11:00:00.000000",
+                        "ticket_id": 5,
+                    },
+                    "has_more": False,
+                }
+            return {
+                "items": [],
+                "count": 0,
+                "cursor": {
+                    "updated_at": "2026-10-02T11:00:00.000000",
+                    "ticket_id": 5,
+                },
+                "has_more": False,
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(app_module, "gastos_comida_api_request", fake_request)
+
+    first = app_module.sync_gastos_purchase_changes()
+    assert first["ok"] is True
+    assert first["bootstrapped"] is True
+
+    state = client.get("/api/state").json()
+    inventory = next(x for x in state["inventory_all"] if x["id"] == item_id)
+    assert inventory["stock_status"] == "out"
+
+    second = app_module.sync_gastos_purchase_changes()
+    assert second["ok"] is True
+    assert second["bootstrapped"] is False
+    assert [x["id"] for x in second["reconciled"]] == [item_id]
+
+    state = client.get("/api/state").json()
+    inventory = next(x for x in state["inventory_all"] if x["id"] == item_id)
+    assert inventory["stock_status"] == "ok"
+    assert inventory["last_purchase_ticket_id"] == 5
+    assert inventory["last_purchased_at"] == "2026-10-02"
+
+    before = [
+        x
+        for x in state["activity"]
+        if x["kind"] == "inventory_purchased" and x.get("entity_id") == item_id
+    ]
+    third = app_module.sync_gastos_purchase_changes()
+    assert third["ok"] is True
+    assert third["reconciled"] == []
+    state = client.get("/api/state").json()
+    after = [
+        x
+        for x in state["activity"]
+        if x["kind"] == "inventory_purchased" and x.get("entity_id") == item_id
+    ]
+    assert len(after) == len(before)
+
+    with app_module.db() as conn:
+        assert app_module.get_meta(conn, "gastos_comida_sync_cursor_id") == "5"
+        assert (
+            app_module.get_meta(conn, "gastos_comida_sync_cursor_at")
+            == "2026-10-02T11:00:00.000000"
+        )
+
+
 def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monkeypatch):
     import app as app_module
 
