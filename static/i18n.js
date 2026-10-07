@@ -515,10 +515,10 @@ Object.assign(DE,{
 });
 
 Object.assign(EN,{
-"Gasto por persona":"Spending by person","Gasto sin persona vinculada:":"Spending without a linked person:","Vincular personas":"Link people","vs. mes anterior":"vs. previous month"
+"Gasto por persona":"Spending by person","Gasto sin persona vinculada:":"Spending without a linked person:","Vincular personas":"Link people","Revisar personas":"Review people","No hay gasto de personas vinculadas en este mes ni en el anterior.":"There is no spending from linked people in this month or the previous one.","Vincula las personas de Casa con sus usuarios de Gastos para ver aquí el reparto del gasto.":"Link Casa people with their Expenses users to see the spending split here.","vs. mes anterior":"vs. previous month"
 });
 Object.assign(DE,{
-"Gasto por persona":"Ausgaben pro Person","Gasto sin persona vinculada:":"Ausgaben ohne verknüpfte Person:","Vincular personas":"Personen verknüpfen","vs. mes anterior":"ggü. Vormonat"
+"Gasto por persona":"Ausgaben pro Person","Gasto sin persona vinculada:":"Ausgaben ohne verknüpfte Person:","Vincular personas":"Personen verknüpfen","Revisar personas":"Personen prüfen","No hay gasto de personas vinculadas en este mes ni en el anterior.":"Für verknüpfte Personen gibt es weder in diesem noch im vorherigen Monat Ausgaben.","Vincula las personas de Casa con sus usuarios de Gastos para ver aquí el reparto del gasto.":"Verknüpfe die Personen in Casa mit ihren Ausgaben-Benutzern, um hier die Ausgabenverteilung zu sehen.","vs. mes anterior":"ggü. Vormonat"
 });
 
 var dictionaries={en:EN,de:DE};
