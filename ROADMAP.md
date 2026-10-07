@@ -98,7 +98,7 @@ Opciones a evaluar:
 - [x] Botón principal contextual: Nueva tarea / Nuevo ticket / Nuevo producto según sección.
 - [x] Revisar navegación móvil con muchas pestañas: barra reducida a Tablero, Tareas, Agenda, Gastos y Más.
 - [x] Atajos Inventario ↔ Gastos ↔ Plan de compra.
-- [ ] Estados de carga/error homogéneos.
+- [x] Estados de carga/error homogéneos en Casa, plan de compra y Gastos integrado.
 - [ ] Auditoría visual completa de español, inglés y alemán.
 
 ### 6. Personas compartidas
@@ -141,4 +141,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es continuar el hito 5: unificar estados de carga/error y después hacer una auditoría visual completa en español, inglés y alemán. El botón principal contextual, la navegación móvil simplificada y los atajos Inventario ↔ Gastos ↔ Plan de compra ya están implementados en la rama feature/navigation-ux-polish.
+La siguiente tarea es terminar el hito 5 con una auditoría visual completa en español, inglés y alemán, corrigiendo cualquier texto del sistema que siga sin traducir. Después, validar en móvil el menú Más y los atajos Inventario ↔ Gastos ↔ Plan de compra.
