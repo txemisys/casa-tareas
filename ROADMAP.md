@@ -39,32 +39,31 @@ Principios:
 ### Limitaciones conocidas
 - La reposición automática inmediata se ejecuta al crear tickets por el proxy de Casa; cambios hechos directamente en la UI standalone de Gastos no siempre se reflejan inmediatamente en Casa.
 - El ahorro actual es por unidad/base y no un total real de cesta porque purchase_quantity sigue siendo texto libre.
-- La recomendación de supermercado se basa en histórico simple y puede quedar sesgada por precios antiguos, promociones aisladas o muestras pequeñas.
 - El gráfico integrado no tiene todavía toda la interacción/riqueza que podría ofrecer la versión standalone.
 - En móvil, la navegación tiene muchas secciones y conviene seguir puliéndola.
 - La internacionalización debe seguir auditándose visualmente; contenido libre del usuario no se traduce.
 
 ## Próximos hitos
 
-### 1. Mejorar la calidad de la recomendación de supermercado — PRIORIDAD ACTUAL
+### 1. Mejorar la calidad de la recomendación de supermercado — COMPLETADO
 Objetivo: evitar recomendar una tienda por un precio antiguo o una única promoción.
 
 Pendiente:
-- [ ] Calcular estadísticas recientes además del histórico completo.
-- [ ] Dar más peso a compras recientes.
-- [ ] Considerar número de muestras por supermercado.
-- [ ] Añadir nivel de confianza de la recomendación.
-- [ ] No recomendar cambio de supermercado si el ahorro esperado es insignificante.
-- [ ] Mantener compatibilidad con los campos actuales de /api/v1/products/{id}/stats.
-- [ ] Mostrar en UI por qué se recomienda una tienda.
-- [ ] Añadir tests de precios antiguos, promoción aislada, pocas muestras y empate.
+- [x] Calcular estadísticas recientes además del histórico completo.
+- [x] Dar más peso a compras recientes.
+- [x] Considerar número de muestras por supermercado.
+- [x] Añadir nivel de confianza de la recomendación.
+- [x] No recomendar cambio de supermercado si el ahorro esperado es insignificante.
+- [x] Mantener compatibilidad con los campos actuales de /api/v1/products/{id}/stats.
+- [x] Mostrar en UI por qué se recomienda una tienda.
+- [x] Añadir tests de precios antiguos, promoción aislada, pocas muestras y empate.
 
 Criterio de aceptación:
 - Una tienda no debe ganar únicamente por una compra aislada muy antigua si existe histórico reciente suficiente en otra.
 - La UI debe distinguir recomendación fuerte, moderada o débil.
 - El ahorro mostrado debe usar el mismo criterio que la recomendación.
 
-### 2. Estimación real de cesta y cantidades
+### 2. Estimación real de cesta y cantidades — PRIORIDAD ACTUAL
 Objetivo: pasar de €/u aproximado a un total de compra útil.
 
 Pendiente:
@@ -141,4 +140,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es el hito 1: mejorar la recomendación de supermercado con recencia, tamaño de muestra, confianza y un umbral mínimo de ahorro antes de recomendar cambiar de tienda.
+La siguiente tarea es el hito 2: normalizar purchase_quantity de forma conservadora y calcular un total de cesta solo cuando la cantidad sea interpretable con seguridad. Si la cobertura es parcial, la UI debe indicarlo explícitamente.
