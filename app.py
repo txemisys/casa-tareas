@@ -3891,10 +3891,85 @@ def gastos_home_summary():
             ((current_total - previous_total) / previous_total) * 100,
             1,
         )
+
+    current_by_user = {
+        str(row.get("user_name") or ""): float(row.get("total") or 0.0)
+        for row in (current.get("by_user") or [])
+        if str(row.get("user_name") or "").strip()
+    }
+    previous_by_user = {
+        str(row.get("user_name") or ""): float(row.get("total") or 0.0)
+        for row in (previous.get("by_user") or [])
+        if str(row.get("user_name") or "").strip()
+    }
+
+    with db() as conn:
+        people_rows = conn.execute(
+            """SELECT id,name,color,icon,active,gastos_user_name
+               FROM people
+               WHERE gastos_user_name IS NOT NULL AND gastos_user_name <> ''
+               ORDER BY active DESC,name COLLATE NOCASE,id"""
+        ).fetchall()
+
+    mapped_users = set()
+    people_spending = []
+    for row in people_rows:
+        user_name = (row["gastos_user_name"] or "").strip()
+        if not user_name:
+            continue
+        mapped_users.add(user_name)
+        current_value = round(float(current_by_user.get(user_name, 0.0)), 2)
+        previous_value = round(float(previous_by_user.get(user_name, 0.0)), 2)
+        if not current_value and not previous_value:
+            continue
+        person_change = None
+        if previous_value:
+            person_change = round(
+                ((current_value - previous_value) / previous_value) * 100,
+                1,
+            )
+        people_spending.append(
+            {
+                "person_id": row["id"],
+                "person_name": row["name"],
+                "person_icon": row["icon"],
+                "person_color": row["color"],
+                "active": bool(row["active"]),
+                "gastos_user_name": user_name,
+                "current_total": current_value,
+                "previous_total": previous_value,
+                "change_percent": person_change,
+                "share_percent": (
+                    round((current_value / current_total) * 100, 1)
+                    if current_total
+                    else 0.0
+                ),
+            }
+        )
+
+    people_spending.sort(
+        key=lambda item: (-item["current_total"], item["person_name"].casefold())
+    )
+    unlinked_current = [
+        {
+            "user_name": user_name,
+            "total": round(total, 2),
+        }
+        for user_name, total in current_by_user.items()
+        if user_name not in mapped_users and total
+    ]
+    unlinked_current.sort(key=lambda item: (-item["total"], item["user_name"].casefold()))
+
     return {
         "current_month": current,
         "previous_month": previous,
         "change_percent": change_percent,
+        "people_spending": people_spending,
+        "unlinked_user_spending": unlinked_current,
+        "unlinked_user_total": round(
+            sum(item["total"] for item in unlinked_current),
+            2,
+        ),
     }
 
 
