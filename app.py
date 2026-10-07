@@ -55,7 +55,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.6.1")
+app = FastAPI(title="Casa Tareas", version="1.7.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
