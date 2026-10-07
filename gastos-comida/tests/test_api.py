@@ -324,6 +324,15 @@ def test_json_ticket_crud_dashboard_and_lookup_api(tmp_path):
     assert "Yogur" in body["lookups"]["articles"]
     assert len(body["filters"]["chart_labels"]) == 12
 
+    spending = client.get("/api/v1/spending/summary?from=2026-10-01&to=2026-10-31")
+    assert spending.status_code == 200
+    assert spending.json["total"] == 6.0
+    assert spending.json["ticket_count"] == 1
+    assert spending.json["by_user"] == [
+        {"user_name": "Jose", "total": 3.5, "line_count": 1},
+        {"user_name": "Cosi", "total": 2.5, "line_count": 1},
+    ]
+
     updated_payload = {
         **payload,
         "supermarket": "Migros",
