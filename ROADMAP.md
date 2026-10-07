@@ -99,7 +99,7 @@ Opciones a evaluar:
 - [x] Revisar navegación móvil con muchas pestañas: barra reducida a Tablero, Tareas, Agenda, Gastos y Más.
 - [x] Atajos Inventario ↔ Gastos ↔ Plan de compra.
 - [x] Estados de carga/error homogéneos en Casa, plan de compra y Gastos integrado.
-- [ ] Auditoría visual completa de español, inglés y alemán.
+- [~] Auditoría visual completa de español, inglés y alemán: auditoría estática y datos iniciales conocidos cubierta; falta validación visual final en navegador real.
 
 ### 6. Personas compartidas
 Objetivo futuro: evaluar si los usuarios/personas de Gastos deben vincularse con las personas de Casa sin romper históricos ni nombres existentes.
@@ -141,4 +141,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es terminar el hito 5 con una auditoría visual completa en español, inglés y alemán, corrigiendo cualquier texto del sistema que siga sin traducir. Después, validar en móvil el menú Más y los atajos Inventario ↔ Gastos ↔ Plan de compra.
+La siguiente tarea es desplegar la versión 1.4.2 y hacer la validación visual final en navegador real, especialmente en alemán e inglés. Revisar Tablero, Tareas, Inventario, Agenda, Áreas, Gastos, Historial y Configuración; comprobar también móvil (menú Más) y los atajos Inventario ↔ Gastos ↔ Plan de compra. Si aparece texto del sistema en español, añadirlo a static/i18n.js o pasar el valor conocido por uiText(); no traducir contenido libre escrito por el usuario.
