@@ -1431,12 +1431,39 @@ def api_v1_spending_summary():
         ticket_query = ticket_query.filter(Ticket.purchase_date >= start)
     if end:
         ticket_query = ticket_query.filter(Ticket.purchase_date <= end)
+
+    user_query = (
+        db.session.query(
+            TicketItem.user_name,
+            func.coalesce(func.sum(TicketItem.total), 0.0),
+            func.count(TicketItem.id),
+        )
+        .join(Ticket, Ticket.id == TicketItem.ticket_id)
+    )
+    if start:
+        user_query = user_query.filter(Ticket.purchase_date >= start)
+    if end:
+        user_query = user_query.filter(Ticket.purchase_date <= end)
+    user_rows = (
+        user_query.group_by(TicketItem.user_name)
+        .order_by(func.sum(TicketItem.total).desc(), TicketItem.user_name.asc())
+        .all()
+    )
+
     return json_response(
         {
             "from": start.strftime("%Y-%m-%d") if start else None,
             "to": end.strftime("%Y-%m-%d") if end else None,
             "total": round(total, 2),
             "ticket_count": ticket_query.count(),
+            "by_user": [
+                {
+                    "user_name": row[0],
+                    "total": round(float(row[1] or 0.0), 2),
+                    "line_count": int(row[2] or 0),
+                }
+                for row in user_rows
+            ],
         }
     )
 
