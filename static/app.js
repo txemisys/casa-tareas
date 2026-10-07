@@ -92,6 +92,7 @@ function householdOverviewPanel(){
     spend=typeof gastosMoney==="function"?gastosMoney(cur.total||0):Number(cur.total||0).toFixed(2)+" €";
     tickets=Number(cur.ticket_count||0);
     if(pct!=null)change=(pct>0?"+":"")+gastosNumber(pct,1)+"% vs. mes anterior";
+    var linkedPeopleCount=Number(homeGastosSummary.linked_people_count||0);
     if(people.length){
       peopleSpend='<div class="household-person-spend"><div class="section">💶 Gasto por persona</div><div class="household-person-grid">'+people.map(function(p){
         var amount=typeof gastosMoney==="function"?gastosMoney(p.current_total||0):Number(p.current_total||0).toFixed(2)+" €";
@@ -99,6 +100,11 @@ function householdOverviewPanel(){
         var delta=p.change_percent==null?"":((p.change_percent>0?"+":"")+gastosNumber(p.change_percent,1)+"% vs. mes anterior");
         return '<div class="household-person-card"><div class="avatar" style="background:'+esc(p.person_color||"#e7eefb")+'">'+esc(p.person_icon||"👤")+'</div><div class="household-person-main"><strong>'+esc(p.person_name)+'</strong><span class="muted">'+esc(p.gastos_user_name)+'</span></div><div class="household-person-total"><strong>'+esc(amount)+'</strong><span>'+esc(share)+'</span>'+(delta?'<small>'+esc(delta)+'</small>':"")+'</div></div>';
       }).join("")+'</div></div>';
+    }else{
+      var emptyText=linkedPeopleCount
+        ?"No hay gasto de personas vinculadas en este mes ni en el anterior."
+        :"Vincula las personas de Casa con sus usuarios de Gastos para ver aquí el reparto del gasto.";
+      peopleSpend='<div class="household-person-spend"><div class="section">💶 Gasto por persona</div><div class="settings-note household-person-empty"><span>'+esc(emptyText)+'</span><button class="ghost" onclick="go(\'people\')">'+(linkedPeopleCount?"Revisar personas":"Vincular personas")+'</button></div></div>';
     }
     var unlinkedTotal=Number(homeGastosSummary.unlinked_user_total||0),unlinkedUsers=homeGastosSummary.unlinked_user_spending||[];
     if(unlinkedTotal>0){

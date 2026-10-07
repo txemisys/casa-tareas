@@ -171,6 +171,7 @@ Ctrl + Shift + R
 ```
 
 ## Incidencias corregidas recientemente
+- [x] 1.6.1: el bloque Tablero → Resumen del hogar → Gasto por persona ya no desaparece cuando no hay filas; distingue entre falta de vínculos y ausencia de gasto en el período, con acceso directo a Personas.
 - [x] 1.5.2: corregido fallo en Gastos integrado `gastosChartHidden is not defined`; la gráfica anual vuelve a renderizar y permite ocultar/mostrar series.
 
 ## Punto exacto para retomar

@@ -2722,20 +2722,23 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.6.0' in root.text
-    assert '/static/gastos.js?v=1.6.0' in root.text
-    assert '/static/gastos.css?v=1.6.0' in root.text
-    assert '/static/i18n.js?v=1.6.0' in root.text
+    assert '/static/app.js?v=1.6.1' in root.text
+    assert '/static/gastos.js?v=1.6.1' in root.text
+    assert '/static/gastos.css?v=1.6.1' in root.text
+    assert '/static/i18n.js?v=1.6.1' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.6.0")
+    bundle = client.get("/static/app.js?v=1.6.1")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert "function updateHeaderAction()" in bundle.text
     assert "function openMobileMore()" in bundle.text
     assert "function goShoppingPlan()" in bundle.text
     assert "Gasto por persona" in bundle.text
+    assert "No hay gasto de personas vinculadas en este mes ni en el anterior." in bundle.text
+    assert "Vincula las personas de Casa con sus usuarios de Gastos para ver aquí el reparto del gasto." in bundle.text
+    assert "linked_people_count" in bundle.text
     assert "unlinked_user_total" in bundle.text
     assert "function integrationHealthPanel()" in bundle.text
     assert '"/api/gastos/integration-health"' in bundle.text
@@ -2752,7 +2755,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert "app-state-error" in root.text
     assert 'grid-template-columns:repeat(5,1fr)' in root.text
     assert 'id="headerPrimary"' in root.text
-    i18n = client.get("/static/i18n.js?v=1.6.0")
+    i18n = client.get("/static/i18n.js?v=1.6.1")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2767,6 +2770,8 @@ def test_frontend_uses_external_script_bundle(client):
     assert '"Pendiente":"Fällig"' in i18n.text
     assert '"Más":"More"' in i18n.text
     assert '"Más":"Mehr"' in i18n.text
+    assert '"Revisar personas":"Review people"' in i18n.text
+    assert '"Revisar personas":"Personen prüfen"' in i18n.text
     assert '"Ver plan de compra":"Einkaufsplan anzeigen"' in i18n.text
     assert '"Error de conexión":"Verbindungsfehler"' in i18n.text
     assert '"Piso Fanalwegle":"Wohnung Fanalwegle"' in i18n.text
@@ -2784,7 +2789,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.6.0")
+    gastos_bundle = client.get("/static/gastos.js?v=1.6.1")
     assert gastos_bundle.status_code == 200
     assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
@@ -3169,7 +3174,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.6.0")
+    bundle = client.get("/static/app.js?v=1.6.1")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text
@@ -3298,6 +3303,7 @@ def test_home_summary_combines_current_and_previous_month_spending(client, monke
     assert data["current_month"]["total"] == 120.0
     assert data["previous_month"]["total"] == 100.0
     assert data["change_percent"] == 20.0
+    assert data["linked_people_count"] == 2
 
     assert [x["person_name"] for x in data["people_spending"]] == ["Jose", "Cosi"]
     assert data["people_spending"][0]["current_total"] == 70.0

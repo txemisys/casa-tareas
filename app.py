@@ -55,7 +55,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.6.0")
+app = FastAPI(title="Casa Tareas", version="1.6.1")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -3964,6 +3964,7 @@ def gastos_home_summary():
         "current_month": current,
         "previous_month": previous,
         "change_percent": change_percent,
+        "linked_people_count": len(people_rows),
         "people_spending": people_spending,
         "unlinked_user_spending": unlinked_current,
         "unlinked_user_total": round(
