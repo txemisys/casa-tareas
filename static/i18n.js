@@ -373,6 +373,30 @@ Object.assign(DE,{
 "elimina tickets, líneas, productos y listas auxiliares, sin tocar Casa Tareas.":"löscht Belege, Positionen, Produkte und Hilfslisten, ohne Casa Tareas zu verändern."
 });
 
+
+Object.assign(EN,{
+"Todos":"All","Pendiente":"Due","Puede esperar":"Can wait","Pronto":"Soon","Conviene hacer":"Worth doing",
+"Sin estimar":"Not estimated","Sin área":"No area",
+"Limpiar baño":"Clean bathroom","Poner lavadora":"Do laundry","Sacar basura":"Take out rubbish","Aspirar salón":"Vacuum living room",
+"Cambiar sábanas":"Change bed sheets","Limpiar frigorífico":"Clean fridge","Limpiar cristales":"Clean windows","Limpiar horno":"Clean oven",
+"Lavabo, ducha, espejo e inodoro":"Sink, shower, mirror and toilet","Ropa blanca":"Whites laundry","Contenedor general":"General waste bin",
+"Sofá, alfombras y zonas de paso":"Sofa, rugs and walkways","Dormitorio principal":"Main bedroom","Interior y estantes":"Interior and shelves",
+"Ventanas y espejos":"Windows and mirrors","Interior y bandejas":"Interior and trays",
+"Baño":"Bathroom","Ropa":"Laundry","Casa":"Home","Salón":"Living room","Dormitorio":"Bedroom","Cocina":"Kitchen",
+"Ropa y textil":"Laundry and textiles","Limpieza y mantenimiento":"Cleaning and maintenance","Vehículos":"Vehicles"
+});
+Object.assign(DE,{
+"Todos":"Alle","Pendiente":"Fällig","Puede esperar":"Kann warten","Pronto":"Bald","Conviene hacer":"Sollte erledigt werden",
+"Sin estimar":"Nicht geschätzt","Sin área":"Ohne Bereich",
+"Limpiar baño":"Bad reinigen","Poner lavadora":"Wäsche waschen","Sacar basura":"Müll rausbringen","Aspirar salón":"Wohnzimmer saugen",
+"Cambiar sábanas":"Bettwäsche wechseln","Limpiar frigorífico":"Kühlschrank reinigen","Limpiar cristales":"Fenster reinigen","Limpiar horno":"Backofen reinigen",
+"Lavabo, ducha, espejo e inodoro":"Waschbecken, Dusche, Spiegel und Toilette","Ropa blanca":"Weiße Wäsche","Contenedor general":"Restmüllbehälter",
+"Sofá, alfombras y zonas de paso":"Sofa, Teppiche und Laufwege","Dormitorio principal":"Hauptschlafzimmer","Interior y estantes":"Innenraum und Ablagen",
+"Ventanas y espejos":"Fenster und Spiegel","Interior y bandejas":"Innenraum und Bleche",
+"Baño":"Bad","Ropa":"Wäsche","Casa":"Haus","Salón":"Wohnzimmer","Dormitorio":"Schlafzimmer","Cocina":"Küche",
+"Ropa y textil":"Wäsche und Textilien","Limpieza y mantenimiento":"Reinigung und Instandhaltung","Vehículos":"Fahrzeuge"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
@@ -534,6 +558,20 @@ function translateBackendPhrases(value,language){
  return result;
 }
 
+function translateKnownFragments(value,language){
+ var dict=dictionaries[language]||{};
+ var keys=[
+  "Limpiar baño","Poner lavadora","Sacar basura","Aspirar salón","Cambiar sábanas","Limpiar frigorífico","Limpiar cristales","Limpiar horno",
+  "Lavabo, ducha, espejo e inodoro","Ropa blanca","Contenedor general","Sofá, alfombras y zonas de paso","Dormitorio principal","Interior y estantes","Ventanas y espejos","Interior y bandejas",
+  "Hacer la compra"
+ ];
+ var result=value;
+ keys.forEach(function(key){
+   if(dict[key]&&result.indexOf(key)>=0)result=result.split(key).join(dict[key]);
+ });
+ return result;
+}
+
 function translateCore(value,language){
  if(!value||language==="es")return value;
  var dict=dictionaries[language]||{};
@@ -544,16 +582,29 @@ function translateCore(value,language){
    return prefix[1]+dict[prefix[2]];
  }
 
- var dynamicValue=translateDynamic(value,language);
- if(dynamicValue!==value)return dynamicValue;
- if(prefix&&prefix[1]){
-   var translatedRest=translateDynamic(prefix[2],language);
-   if(translatedRest!==prefix[2])return prefix[1]+translatedRest;
+ // Many cards render several independently translatable values in one text node.
+ // Translate each middle-dot segment so strings such as
+ // "Sin área · ⏱ Sin estimar" do not remain partly Spanish.
+ if(value.indexOf(" · ")>=0){
+   var parts=value.split(" · ");
+   var changed=false;
+   var translated=parts.map(function(part){
+     var next=translateCore(part,language);
+     if(next!==part)changed=true;
+     return next;
+   });
+   if(changed)return translated.join(" · ");
  }
 
- return translateBackendPhrases(value,language);
-}
+ var dynamicValue=translateDynamic(value,language);
+ if(dynamicValue!==value)return translateKnownFragments(dynamicValue,language);
+ if(prefix&&prefix[1]){
+   var translatedRest=translateDynamic(prefix[2],language);
+   if(translatedRest!==prefix[2])return prefix[1]+translateKnownFragments(translatedRest,language);
+ }
 
+ return translateKnownFragments(translateBackendPhrases(value,language),language);
+}
 function translateString(value,language){
  var raw=String(value==null?"":value);
  var m=raw.match(/^(\s*)([\s\S]*?)(\s*)$/);
