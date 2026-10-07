@@ -462,6 +462,18 @@ Object.assign(DE,{
 Object.assign(EN,{"Error de conexión":"Connection error"});
 Object.assign(DE,{"Error de conexión":"Verbindungsfehler"});
 
+
+Object.assign(EN,{
+"Piso Fanalwegle":"Fanalwegle apartment","Piso Im Gapetsch":"Im Gapetsch apartment","Casa de Cosi":"Cosi's house","Krankenkassen":"Health insurance",
+"Vacaciones-Viajes":"Holidays & travel","Archivada":"Archived","Archivadas":"Archived","Activas":"Active","Eventos":"Events","eventos":"events","documentos":"documents",
+"Regreso:":"Return:","Siguen activas:":"Still active:","Todas las áreas de tareas están pausadas":"All task areas are paused"
+});
+Object.assign(DE,{
+"Piso Fanalwegle":"Wohnung Fanalwegle","Piso Im Gapetsch":"Wohnung Im Gapetsch","Casa de Cosi":"Cosis Haus","Krankenkassen":"Krankenkassen",
+"Vacaciones-Viajes":"Urlaub & Reisen","Archivada":"Archiviert","Archivadas":"Archiviert","Activas":"Aktiv","Eventos":"Termine","eventos":"Termine","documentos":"Dokumente",
+"Regreso:":"Rückkehr:","Siguen activas:":"Weiter aktiv:","Todas las áreas de tareas están pausadas":"Alle Aufgabenbereiche sind pausiert"
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
