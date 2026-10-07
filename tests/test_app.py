@@ -3009,6 +3009,7 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
             "name": "Leche",
             "category": "Alimentación",
             "stock_status": "out",
+            "purchase_quantity": "2 unidades",
             "gastos_product_id": 10,
         },
     )
@@ -3018,6 +3019,7 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
             "name": "Café",
             "category": "Alimentación",
             "stock_status": "low",
+            "purchase_quantity": "1 paquete",
             "gastos_product_id": 20,
         },
     )
@@ -3027,6 +3029,7 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
             "name": "Papel",
             "category": "Hogar",
             "stock_status": "out",
+            "purchase_quantity": "1 kg",
         },
     )
     assert first.status_code == 200
@@ -3115,6 +3118,50 @@ def test_shopping_plan_groups_inventory_by_recommended_supermarket(client, monke
     assert leche["estimated_saving_percent"] == 12.5
     assert leche["recommendation_confidence"] == "medium"
     assert leche["recommendation_reason"] == "best_recent_value"
+    assert leche["purchase_quantity_parsed"]["status"] == "count"
+    assert leche["purchase_quantity_parsed"]["value"] == 2.0
+    assert leche["estimated_line_total"] == 3.5
+    assert leche["estimated_baseline_total"] == 4.0
+    assert leche["estimated_saving_total"] == 0.5
+    assert migros["estimated_basket_total"] == 10.9
+    assert migros["estimated_basket_baseline_total"] == 11.4
+    assert migros["estimated_basket_saving"] == 0.5
+    assert migros["basket_priced_count"] == 2
+    assert migros["basket_complete"] is True
+    assert data["estimated_basket_total"] == 10.9
+    assert data["estimated_basket_saving"] == 0.5
+    assert data["basket_priced_count"] == 2
+    assert data["basket_unpriced_count"] == 1
+    assert data["basket_complete"] is False
+    papel = next(item for item in data["items"] if item["name"] == "Papel")
+    assert papel["purchase_quantity_parsed"]["status"] == "measurement_unverified"
+    assert papel["estimated_line_total"] is None
+
+
+def test_purchase_quantity_parser_is_conservative():
+    import app as app_module
+
+    assert app_module.parse_purchase_quantity("3 unidades") == {
+        "raw": "3 unidades",
+        "value": 3.0,
+        "unit": "unidades",
+        "status": "count",
+        "estimate_eligible": True,
+    }
+    parsed = app_module.parse_purchase_quantity("1,5 botellas")
+    assert parsed["value"] == 1.5
+    assert parsed["status"] == "count"
+    assert parsed["estimate_eligible"] is True
+
+    measured = app_module.parse_purchase_quantity("1.5 kg")
+    assert measured["value"] == 1.5
+    assert measured["unit"] == "kg"
+    assert measured["status"] == "measurement_unverified"
+    assert measured["estimate_eligible"] is False
+
+    unknown = app_module.parse_purchase_quantity("un par")
+    assert unknown["status"] == "unrecognized"
+    assert unknown["estimate_eligible"] is False
 
 
 def test_shopping_task_is_identified_for_supermarket_plan_display(client):
