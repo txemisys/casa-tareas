@@ -12,13 +12,28 @@ async function load(){try{state=await api("/api/state");if(typeof setAppLanguage
 function fmtDate(s){if(!s)return"";var d=new Date(s.length===10?s+"T12:00:00":s);return new Intl.DateTimeFormat(typeof appLocale==="function"?appLocale():"es-ES",{day:"numeric",month:"short"}).format(d)}
 function localDateValue(addDays){var d=new Date();d.setHours(12,0,0,0);d.setDate(d.getDate()+(addDays||0));return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())}
 function dueText(t){if(t.paused||!t.next_due)return"";var a=new Date(t.next_due+"T12:00:00"),b=new Date();b.setHours(12,0,0,0);var n=Math.round((a-b)/86400000);if(n<0)return Math.abs(n)+" d pendiente";if(n===0)return"Hoy";if(n===1)return"Mañana";return"En "+n+" días"}
-function tabs(){var h="",b="";views.forEach(function(v){h+='<button class="tab '+(view===v[0]?"active":"")+'" onclick="go(\''+v[0]+'\')">'+v[1]+"</button>";if(v[0]!=="settings")b+='<button class="'+(view===v[0]?"active":"")+'" onclick="go(\''+v[0]+'\')"><div>'+v[2]+"</div>"+v[1]+"</button>"});document.querySelector(".tabs").innerHTML=h;document.getElementById("bottom").innerHTML=b;updateUndoButton()}
+function tabs(){var h="",b="";views.forEach(function(v){h+='<button class="tab '+(view===v[0]?"active":"")+'" onclick="go(\''+v[0]+'\')">'+v[1]+"</button>"});var mobile=[["board","Tablero","▦"],["tasks","Tareas","☰"],["events","Agenda","📅"],["gastos","Gastos","🛒"]];mobile.forEach(function(v){b+='<button class="'+(view===v[0]?"active":"")+'" onclick="go(\''+v[0]+'\')"><div>'+v[2]+"</div>"+v[1]+"</button>"});var moreActive=["areas","people","history","settings"].indexOf(view)>=0;b+='<button class="'+(moreActive?"active":"")+'" onclick="openMobileMore()"><div>•••</div>Más</button>';document.querySelector(".tabs").innerHTML=h;document.getElementById("bottom").innerHTML=b;updateUndoButton()}
+function openMobileMore(){var entries=[["areas","⌂","Áreas"],["people","👥","Personas"],["history","↺","Historial"],["settings","⚙","Configuración"]];var html='<div class="modalhead"><div><h2>Más</h2><div class="muted">Administración y opciones de Casa Tareas.</div></div><button class="ghost" onclick="closeModal()">×</button></div><div class="mobile-more-grid">'+entries.map(function(x){return'<button class="mobile-more-item '+(view===x[0]?"active":"")+'" onclick="mobileGo(\''+x[0]+'\')"><span>'+x[1]+'</span><strong>'+x[2]+'</strong></button>'}).join("")+'</div>';showModal(html)}
+function mobileGo(v){closeModal();go(v)}
 function go(v){view=v;render()}
+function headerActionConfig(){
+  if(view==="tasks"&&taskSection==="inventory")return{label:"+ Nuevo producto",action:"openInventoryItem()"};
+  if(view==="tasks")return{label:"+ Nueva tarea",action:"openTask()"};
+  if(view==="events")return{label:"+ Nuevo evento",action:"openEvent()"};
+  if(view==="areas")return{label:"+ Nueva área",action:"openArea()"};
+  if(view==="people")return{label:"+ Nueva persona",action:"openPerson()"};
+  if(view==="gastos")return{label:"+ Nuevo ticket",action:"openGastosTicket()"};
+  if(view==="board")return{label:"+ Nueva tarea",action:"openTask()"};
+  return null;
+}
+function updateHeaderAction(){var b=document.getElementById("headerPrimary");if(!b)return;var cfg=headerActionConfig();if(!cfg){b.classList.add("hidden");return}b.classList.remove("hidden");b.textContent=cfg.label;b.setAttribute("onclick",cfg.action);if(typeof applyAppTranslations==="function")applyAppTranslations(b)}
+function goInventory(){taskSection="inventory";go("tasks")}
+function goShoppingPlan(){taskSection="inventory";go("tasks");setTimeout(function(){var el=document.getElementById("shoppingPlanPanel");if(el)el.scrollIntoView({behavior:"smooth",block:"start"})},0)}
 function updateUndoButton(){var b=document.getElementById("undoTop");if(!b)return;if(state.last_undo){b.classList.remove("hidden");b.textContent=window.matchMedia("(max-width:760px)").matches?"↶":"↶ Deshacer"}else b.classList.add("hidden")}
 function showUndo(message,undoId){var t=document.getElementById("toast");if(!t)return;if(toastTimer)clearTimeout(toastTimer);t.innerHTML='<span>'+esc(message)+'</span>'+(undoId?'<button onclick="undoById('+undoId+')">Deshacer</button>':'');t.classList.remove("hidden");toastTimer=setTimeout(function(){t.classList.add("hidden")},12000)}
 async function undoById(id){try{var r=await api("/api/undo/"+id,{method:"POST"});await load();showUndo("Deshecho: "+(r.undone||"último cambio"),null)}catch(e){alert(e.message)}}
 async function undoLatest(){if(state.last_undo)await undoById(state.last_undo.id)}
-function render(){tabs();if(view==="board")renderBoard();if(view==="tasks")renderTasks();if(view==="events")renderEvents();if(view==="areas")renderAreas();if(view==="people")renderPeople();if(view==="gastos"&&typeof renderGastos==="function")renderGastos();if(view==="history")renderHistory();if(view==="settings")renderSettings();renderDueAlerts();notifyBrowserAlerts()}
+function render(){tabs();updateHeaderAction();if(view==="board")renderBoard();if(view==="tasks")renderTasks();if(view==="events")renderEvents();if(view==="areas")renderAreas();if(view==="people")renderPeople();if(view==="gastos"&&typeof renderGastos==="function")renderGastos();if(view==="history")renderHistory();if(view==="settings")renderSettings();renderDueAlerts();notifyBrowserAlerts()}
 function pad2(n){return String(n).padStart(2,"0")}
 function datetimeLocalValue(value){var d=value?new Date(value):new Date(Date.now()+86400000);if(!value)d.setMinutes(0,0,0);return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())+"T"+pad2(d.getHours())+":"+pad2(d.getMinutes())}
 function fmtEventDate(value){var d=new Date(value);return new Intl.DateTimeFormat(typeof appLocale==="function"?appLocale():"es-ES",{weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}).format(d)}
@@ -104,7 +119,7 @@ h+=state.today.length?'<div class="grid">'+state.today.map(function(t){return ca
 h+='<div class="drop" id="done">Arrastra aquí una tarea terminada<br><span class="muted">o usa el botón ✓ Hecha</span></div>';document.getElementById("main").innerHTML=h;bindDrag()}
 function renderUpcoming(){var h='<div class="pagehead"><div><h1>Próximamente</h1><div class="subtitle">Lo que viene después, ordenado por fecha.</div></div></div>';if(!state.upcoming.length)h+='<div class="empty">No hay tareas futuras.</div>';else{var groups={};state.upcoming.forEach(function(t){var k=t.next_due||"Sin fecha";(groups[k]||(groups[k]=[])).push(t)});Object.keys(groups).forEach(function(k){h+='<div class="section">'+fmtDate(k)+'</div><div class="grid">'+groups[k].map(function(t){return card(t,"upcoming")}).join("")+"</div>"})}document.getElementById("main").innerHTML=h}
 function taskSectionSwitcher(){return'<div class="task-switcher"><button class="ghost '+(taskSection==="tasks"?"active":"")+'" onclick="switchTaskSection(\'tasks\')">☰ Tareas</button><button class="ghost '+(taskSection==="inventory"?"active":"")+'" onclick="switchTaskSection(\'inventory\')">🧺 Inventario y Comprar'+((state.shopping_list||[]).length?' · '+state.shopping_list.length:'')+'</button></div>'}
-function switchTaskSection(section){taskSection=section;renderTasks()}
+function switchTaskSection(section){taskSection=section;updateHeaderAction();renderTasks()}
 function stockLabel(status){return status==="out"?"Falta":status==="low"?"Poco":"Hay"}
 function shoppingPlanItem(itemId){return shoppingPlan&&shoppingPlan.items?(shoppingPlan.items.find(function(x){return Number(x.id)===Number(itemId)})||null):null}
 function shoppingRecommendationMeta(item){
@@ -119,7 +134,7 @@ function shoppingRecommendationMeta(item){
 }
 function shoppingPlanPanel(){
   if(!(state.shopping_list||[]).length)return"";
-  if(!shoppingPlanLoaded)return'<section class="inventory-panel"><div class="section">🧭 Plan de compra</div><div class="empty">'+(shoppingPlanLoading?"Calculando supermercados…":"Cargando recomendaciones…")+'</div></section>';
+  if(!shoppingPlanLoaded)return'<section id="shoppingPlanPanel" class="inventory-panel"><div class="section">🧭 Plan de compra</div><div class="settings-actions"><button class="ghost" onclick="go(\'gastos\')">🛒 Abrir Gastos</button></div><div class="empty">'+(shoppingPlanLoading?"Calculando supermercados…":"Cargando recomendaciones…")+'</div></section>';
   if(!shoppingPlan||!(shoppingPlan.groups||[]).length)return"";
   var totalSaving=Number(shoppingPlan.estimated_saving_unit_total||0);
   var basketCount=Number(shoppingPlan.basket_priced_count||0),basketTotal=Number(shoppingPlan.estimated_basket_total||0),basketSaving=Number(shoppingPlan.estimated_basket_saving||0);
@@ -130,7 +145,7 @@ function shoppingPlanPanel(){
   }else if(totalSaving>0){
     basketSummary='<div class="shopping-required"><strong>Ahorro estimado siguiendo las recomendaciones: '+esc(money(totalSaving))+'/u.</strong> No hay cantidades suficientemente claras para calcular la cesta.</div>';
   }
-  return '<section class="inventory-panel"><div class="section">🧭 Plan de compra por supermercado</div>'+basketSummary+'<div class="inventory-list">'+shoppingPlan.groups.map(function(g){
+  return '<section id="shoppingPlanPanel" class="inventory-panel"><div class="section">🧭 Plan de compra por supermercado</div><div class="settings-actions" style="margin-bottom:10px"><button class="ghost" onclick="go(\'gastos\')">🛒 Abrir Gastos</button></div>'+basketSummary+'<div class="inventory-list">'+shoppingPlan.groups.map(function(g){
     var est=money(g.estimated_unit_total),save=money(g.estimated_saving_unit_total||0),basket=money(g.estimated_basket_total||0);
     return '<div class="shopping-card"><div><strong>'+esc(g.supermarket)+'</strong><span class="pill">'+g.count+' producto'+(g.count===1?"":"s")+'</span>'+(g.basket_priced_count?'<span class="pill">Cesta ≈ '+esc(basket)+'</span>':(g.priced_count?'<span class="pill">≈ '+esc(est)+' base/u.</span>':""))+(Number(g.estimated_saving_unit_total||0)>0&&!g.basket_priced_count?'<span class="pill">Ahorro ≈ '+esc(save)+'/u.</span>':"")+'</div><div class="shopping-required">'+g.items.map(function(x){var saving=Number(x.estimated_saving_unit||0),line=x.estimated_line_total;return esc(x.name)+(x.purchase_quantity?' · '+esc(x.purchase_quantity):"")+(line!=null?' · ≈ '+esc(money(line)):(saving>0?' · ahorra aprox. '+esc(money(saving))+'/u.':""))}).join("<br>")+'</div></div>';
   }).join("")+'</div></section>';
