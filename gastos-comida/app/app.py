@@ -2,7 +2,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from flask import Flask, redirect, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy
@@ -124,6 +124,13 @@ class LookupExclusion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     category = db.Column(db.String(40), nullable=False, index=True)
     value = db.Column(db.String(200), nullable=False, index=True)
+
+
+def touch_ticket(ticket):
+    now = datetime.utcnow()
+    if ticket.updated_at is not None and now <= ticket.updated_at:
+        now = ticket.updated_at + timedelta(microseconds=1)
+    ticket.updated_at = now
 
 
 def parse_float(value, default=0.0):
@@ -784,7 +791,7 @@ def create_ticket():
         ticket.purchase_date = purchase_date
         ticket.supermarket = supermarket
         ticket.total = ticket_total
-        ticket.updated_at = datetime.utcnow()
+        touch_ticket(ticket)
         ticket.items.clear()
         for item in items:
             ticket.items.append(item)
@@ -938,7 +945,7 @@ def save_ticket_json(payload, ticket=None):
         ticket.purchase_date = purchase_date
         ticket.supermarket = supermarket
         ticket.total = ticket_total
-        ticket.updated_at = datetime.utcnow()
+        touch_ticket(ticket)
         ticket.items.clear()
         for item in items:
             ticket.items.append(item)
