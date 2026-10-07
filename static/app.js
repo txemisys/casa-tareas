@@ -217,7 +217,7 @@ function integrationHealthPanel(){
   var body='<div class="integration-health"><div class="settings-status"><div><strong>🩺 Estado de integración</strong><div class="muted">Comprueba vínculos entre Casa Tareas y Gastos sin modificar datos.</div></div><span class="telegram-status '+statusClass+'">'+esc(uiText(status))+'</span></div>';
   body+='<div class="integration-health-grid"><div><strong>'+Number(inv.linked||0)+' / '+Number(inv.total||0)+'</strong><span>Inventario vinculado</span></div><div><strong>'+Number(people.linked||0)+' / '+Number(people.total||0)+'</strong><span>Personas vinculadas</span></div><div><strong>'+Number(products.total||0)+'</strong><span>Productos en Gastos</span></div><div><strong>'+Number(users.linked||0)+' / '+Number(users.total||0)+'</strong><span>Usuarios de Gastos vinculados</span></div></div>';
   if(staleProducts.length||staleUsers.length){body+='<div class="settings-warning"><strong>Vínculos que requieren atención</strong><br>'+(staleProducts.length?staleProducts.length+' producto'+(staleProducts.length===1?"":"s")+' apunta'+(staleProducts.length===1?"":"n")+' a un producto de Gastos que ya no aparece. ':"")+(staleUsers.length?staleUsers.length+' persona'+(staleUsers.length===1?"":"s")+' está'+(staleUsers.length===1?"":"n")+' vinculada'+(staleUsers.length===1?"":"s")+' a un usuario que ya no aparece en Gastos.':"")+'</div>'}
-  if(productSuggestions.length||userSuggestions.length){body+='<div class="settings-note"><strong>Coincidencias exactas disponibles</strong><br>Solo se muestran nombres idénticos; no se enlaza nada automáticamente.'+(productSuggestions.length?'<div class="integration-match-list">'+productSuggestions.slice(0,8).map(function(x){return'<div>🧴 '+esc(x.inventory_name)+' ↔ '+esc(x.product_name)+'</div>'}).join("")+'</div>':"")+(userSuggestions.length?'<div class="integration-match-list">'+userSuggestions.slice(0,8).map(function(x){return'<div>👤 '+esc(x.person_name)+' ↔ '+esc(x.gastos_user_name)+'</div>'}).join("")+'</div>':"")+'</div>'}
+  if(productSuggestions.length||userSuggestions.length){body+='<div class="settings-note"><strong>Coincidencias exactas disponibles</strong><br>Solo se muestran nombres idénticos; no se enlaza nada automáticamente.'+(productSuggestions.length?'<div class="integration-match-list">'+productSuggestions.slice(0,8).map(function(x){return'<div class="integration-match-row"><span>🧴 '+esc(x.inventory_name)+' ↔ '+esc(x.product_name)+'</span><button class="ghost" onclick="linkExactProduct('+x.inventory_id+','+x.product_id+')">Vincular</button></div>'}).join("")+'</div>':"")+(userSuggestions.length?'<div class="integration-match-list">'+userSuggestions.slice(0,8).map(function(x){return'<div class="integration-match-row"><span>👤 '+esc(x.person_name)+' ↔ '+esc(x.gastos_user_name)+'</span><button class="ghost" onclick="linkExactUser('+x.person_id+',\''+esc(x.gastos_user_name).replace(/'/g,"&#39;")+'\')">Vincular</button></div>'}).join("")+'</div>':"")+'</div>'}
   body+='<div class="settings-actions"><button class="ghost" onclick="goInventory()">Abrir inventario</button><button class="ghost" onclick="go(\'people\')">Abrir personas</button><button class="ghost" onclick="go(\'gastos\')">Abrir Gastos</button></div></div>';
   return body;
 }
@@ -229,6 +229,19 @@ async function loadIntegrationHealth(){
   catch(e){integrationHealth=null;integrationHealthError=e.message||String(e)}
   integrationHealthLoading=false;
   if(view==="settings")renderSettings();
+}
+
+async function linkExactProduct(inventoryId,productId){
+  try{
+    await api("/api/gastos/integration-health/link-product",{method:"POST",body:JSON.stringify({inventory_id:inventoryId,product_id:productId})});
+    await load();integrationHealthLoaded=false;await loadIntegrationHealth();showUndo("Producto vinculado con Gastos",null);
+  }catch(e){alert(e.message)}
+}
+async function linkExactUser(personId,userName){
+  try{
+    await api("/api/gastos/integration-health/link-user",{method:"POST",body:JSON.stringify({person_id:personId,gastos_user_name:userName})});
+    await load();integrationHealthLoaded=false;await loadIntegrationHealth();showUndo("Persona vinculada con Gastos",null);
+  }catch(e){alert(e.message)}
 }
 function renderSettings(){var s=state.settings||{};var r=s.runtime||{};var t=s.telegram||state.telegram||{};var cal=s.calendars||{};var att=s.attachments||{};var integrations=s.integrations||{};var gastos=integrations.gastos_comida||{};var configured=!!t.token_configured;var source=telegramSourceLabel(t.token_source);var bot=t.bot_username?"@"+t.bot_username:"—";var group=t.chat_id?(t.chat_title||String(t.chat_id)):"Sin grupo seleccionado";var tokenControls="";
 if(t.token_editable){tokenControls='<div class="secret-input"><input id="telegramTokenSetting" type="password" autocomplete="new-password" placeholder="'+(configured?"Pega un token nuevo para sustituir el actual":"Pega aquí el token de BotFather")+'"><button class="primary" onclick="saveTelegramTokenSetting()">'+(configured?"Sustituir":"Guardar y validar")+'</button></div>'+(configured?'<div class="settings-actions"><button class="danger" onclick="deleteTelegramTokenSetting()">Eliminar token guardado</button></div>':'')}else{tokenControls='<div class="settings-warning">Este token viene de <code>TELEGRAM_BOT_TOKEN</code>. Para administrarlo desde esta pantalla, elimina esa variable de <code>.env</code> y recrea el contenedor una única vez.</div>'}
