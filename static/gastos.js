@@ -32,6 +32,7 @@ async function loadGastosDashboard(){
 }
 async function gastosGo(section){
   gastosSection=section;
+  if(typeof updateHeaderAction==="function")updateHeaderAction();
   var root=document.getElementById("gastosRoot");
   if(root)root.innerHTML=gastosSubnav()+'<div class="gastos-loading">Cargando…</div>';
   try{
@@ -93,7 +94,7 @@ function renderGastosSummary(){
   }else{
     shoppingBody='<div class="gastos-ticket-list">'+shopping.map(function(item){return'<article class="gastos-ticket"><div class="gastos-ticket-top"><div><div class="gastos-ticket-title">'+esc(item.name)+'</div><div class="gastos-ticket-meta">'+esc(item.purchase_quantity||item.category||"")+(item.gastos_linked?' · vinculado con Gastos':' · sin vincular')+'</div></div><span class="status '+(item.gastos_linked?'':'off')+'">'+(item.gastos_linked?'Automático':'Manual')+'</span></div></article>'}).join("")+'</div>';
   }
-  var shoppingPanel='<section class="gastos-panel"><div class="gastos-panel-head"><div><h2>🧺 Por comprar</h2><p>Productos de Casa Tareas agrupados por supermercado recomendado cuando hay histórico suficiente.</p></div><button class="secondary" onclick="taskSection=\'inventory\';go(\'tasks\')">Abrir inventario</button></div>'+shoppingBody+'</section>';
+  var shoppingPanel='<section class="gastos-panel"><div class="gastos-panel-head"><div><h2>🧺 Por comprar</h2><p>Productos de Casa Tareas agrupados por supermercado recomendado cuando hay histórico suficiente.</p></div><div class="settings-actions"><button class="secondary" onclick="goInventory()">Abrir inventario</button><button class="ghost" onclick="goShoppingPlan()">🧭 Ver plan de compra</button></div></div>'+shoppingBody+'</section>';
   return renderGastosMetrics()+'<div class="gastos-grid"><section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Evolución anual</h2><p>Total mensual y desglose por usuario.</p></div><select onchange="gastosChangeYear(this.value)">'+(d.years||[]).map(function(y){return'<option value="'+y+'" '+(Number(f.chart_year)===Number(y)?"selected":"")+'>'+y+'</option>'}).join("")+'</select></div>'+gastosChart(f.chart_labels||[],f.chart_datasets||[])+'</section><section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Estado</h2><p>Datos disponibles en Gastos.</p></div></div><div class="gastos-product-stats"><div class="gastos-product-stat"><span>Tickets</span><strong>'+Number(counts.tickets||0)+'</strong></div><div class="gastos-product-stat"><span>Productos</span><strong>'+Number(counts.products||0)+'</strong></div><div class="gastos-product-stat"><span>Líneas</span><strong>'+Number(counts.items||0)+'</strong></div><div class="gastos-product-stat"><span>Por comprar</span><strong>'+shopping.length+'</strong></div></div></section></div>'+shoppingPanel+'<section class="gastos-panel"><div class="gastos-panel-head"><div><h2>Últimos tickets</h2><p>Las compras más recientes.</p></div><button class="secondary" onclick="gastosGo(\'tickets\')">Ver todos</button></div><div class="gastos-ticket-list">'+(recent.length?recent.map(function(t){return gastosTicketCard(t,true)}).join(""):'<div class="gastos-empty">Todavía no hay tickets.</div>')+"</div></section>";
 }
 function gastosChangeYear(value){gastosFilters.chart_year=Number(value)||new Date().getFullYear();loadGastosDashboard().catch(function(e){alert(e.message)})}
