@@ -425,6 +425,18 @@ Object.assign(DE,{
 "No hay cantidades suficientemente claras para calcular un total de cesta.":"Es gibt nicht genügend eindeutige Mengen, um einen Warenkorb-Gesamtbetrag zu berechnen."
 });
 
+
+Object.assign(EN,{
+"Sincronizar ahora":"Sync now","Última sincronización":"Last sync","Sincronización automática":"Automatic sync",
+"Error de sincronización":"Sync error","Gastos sincronizado":"Expenses synced","sin cambios":"no changes",
+"Las compras nuevas o editadas directamente en Gastos se sincronizan automáticamente con el Inventario de Casa.":"Purchases created or edited directly in Expenses are automatically synchronized with Casa Inventory."
+});
+Object.assign(DE,{
+"Sincronizar ahora":"Jetzt synchronisieren","Última sincronización":"Letzte Synchronisierung","Sincronización automática":"Automatische Synchronisierung",
+"Error de sincronización":"Synchronisierungsfehler","Gastos sincronizado":"Ausgaben synchronisiert","sin cambios":"keine Änderungen",
+"Las compras nuevas o editadas directamente en Gastos se sincronizan automáticamente con el Inventario de Casa.":"Direkt in Ausgaben neu erstellte oder bearbeitete Einkäufe werden automatisch mit dem Casa-Inventar synchronisiert."
+});
+
 var dictionaries={en:EN,de:DE};
 
 var dynamic={
