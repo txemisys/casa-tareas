@@ -111,7 +111,8 @@ function shoppingRecommendationMeta(item){
   var p=shoppingPlanItem(item.id);if(!p)return"";
   var rec=p.recommended_supermarket,last=p.last_purchase;
   var bits=[];
-  if(rec&&rec.supermarket)bits.push("💡 "+rec.supermarket+(rec.average_unit_price!=null?" · "+(typeof gastosMoney==="function"?gastosMoney(rec.average_unit_price):Number(rec.average_unit_price).toFixed(2)+" €")+"/u":""));
+  if(rec&&rec.supermarket){var rp=rec.recommendation_unit_price!=null?rec.recommendation_unit_price:rec.average_unit_price;bits.push("💡 "+rec.supermarket+(rp!=null?" · "+(typeof gastosMoney==="function"?gastosMoney(rp):Number(rp).toFixed(2)+" €")+"/u":""));}
+  if(p.recommendation_confidence)bits.push("Confianza "+(p.recommendation_confidence==="high"?"alta":p.recommendation_confidence==="medium"?"media":"baja"));
   if(p.estimated_saving_unit>0)bits.push("Ahorro aprox. "+(typeof gastosMoney==="function"?gastosMoney(p.estimated_saving_unit):Number(p.estimated_saving_unit).toFixed(2)+" €")+"/u"+(p.estimated_saving_percent!=null?" ("+Number(p.estimated_saving_percent).toFixed(1)+"%)":""));
   if(last&&last.supermarket)bits.push("Última: "+last.supermarket+(last.unit_price!=null?" · "+(typeof gastosMoney==="function"?gastosMoney(last.unit_price):Number(last.unit_price).toFixed(2)+" €")+"/u":""));
   return bits.length?'<div class="shopping-required">'+bits.map(function(x){return esc(x)}).join(" · ")+'</div>':"";

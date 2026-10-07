@@ -1788,7 +1788,7 @@ def settings_json(conn):
     runtime = runtime_settings_json()
     runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.3.5",
+        "version": "1.3.6",
         "runtime": runtime,
         "telegram": telegram,
         "calendars": {
@@ -3099,7 +3099,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.3.5"}
+    return {"ok": True, "version": "1.3.6"}
 
 
 @app.get("/api/state")
@@ -3450,6 +3450,8 @@ def gastos_shopping_plan():
             "habitual_unit_price": None,
             "estimated_saving_unit": None,
             "estimated_saving_percent": None,
+            "recommendation_confidence": None,
+            "recommendation_reason": None,
             "last_purchase": None,
             "pricing_available": False,
         }
@@ -3462,18 +3464,21 @@ def gastos_shopping_plan():
                 plan_item["recommended_supermarket"] = recommended
                 plan_item["habitual_supermarket"] = habitual
                 plan_item["average_unit_price"] = stats.get("average_unit_price")
+                recommendation_meta = stats.get("recommendation") or {}
+                plan_item["recommendation_confidence"] = recommendation_meta.get("confidence")
+                plan_item["recommendation_reason"] = recommendation_meta.get("reason")
                 plan_item["last_purchase"] = stats.get("last_purchase")
                 plan_item["pricing_available"] = bool(
                     recommended or stats.get("last_purchase")
                 )
 
                 recommended_price = (
-                    recommended.get("average_unit_price")
+                    (recommended.get("recommendation_unit_price") if recommended.get("recommendation_unit_price") is not None else recommended.get("average_unit_price"))
                     if isinstance(recommended, dict)
                     else None
                 )
                 habitual_price = (
-                    habitual.get("average_unit_price")
+                    (habitual.get("recommendation_unit_price") if habitual.get("recommendation_unit_price") is not None else habitual.get("average_unit_price"))
                     if isinstance(habitual, dict)
                     else None
                 )

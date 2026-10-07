@@ -1146,10 +1146,51 @@ def api_v1_product_stats(product_id):
     spend_total = sum(float(row[3] or 0.0) for row in rows)
     priced_rows = []
     supermarket_map = {}
+
+    reference_date = rows[0][0] if rows else None
+
+    def recency_weight(purchase_date):
+        if reference_date is None or purchase_date is None:
+            return 1.0
+        age_days = max(0, (reference_date - purchase_date).days)
+        if age_days <= 30:
+            return 1.0
+        if age_days <= 90:
+            return 0.8
+        if age_days <= 180:
+            return 0.55
+        if age_days <= 365:
+            return 0.3
+        return 0.15
+
+    def confidence_label(priced_count, recent_priced_count):
+        if priced_count >= 4 and recent_priced_count >= 2:
+            return "high"
+        if priced_count >= 2 and recent_priced_count >= 1:
+            return "medium"
+        return "low"
+
     for purchase_date, supermarket, quantity, line_total in rows:
         quantity = float(quantity or 0.0)
         line_total = float(line_total or 0.0)
         unit_price = (line_total / quantity) if quantity > 0 else None
+        stats = supermarket_map.setdefault(
+            supermarket,
+            {
+                "supermarket": supermarket,
+                "purchase_count": 0,
+                "unit_price_total": 0.0,
+                "priced_count": 0,
+                "recent_unit_price_total": 0.0,
+                "recent_priced_count": 0,
+                "weighted_unit_price_total": 0.0,
+                "weight_total": 0.0,
+                "last_unit_price": None,
+                "last_date": None,
+            },
+        )
+        stats["purchase_count"] += 1
+
         if unit_price is not None:
             priced_rows.append(
                 {
@@ -1158,36 +1199,17 @@ def api_v1_product_stats(product_id):
                     "unit_price": unit_price,
                 }
             )
-            stats = supermarket_map.setdefault(
-                supermarket,
-                {
-                    "supermarket": supermarket,
-                    "purchase_count": 0,
-                    "unit_price_total": 0.0,
-                    "priced_count": 0,
-                    "last_unit_price": None,
-                    "last_date": None,
-                },
-            )
-            stats["purchase_count"] += 1
+            weight = recency_weight(purchase_date)
             stats["unit_price_total"] += unit_price
             stats["priced_count"] += 1
+            stats["weighted_unit_price_total"] += unit_price * weight
+            stats["weight_total"] += weight
+            if reference_date is not None and (reference_date - purchase_date).days <= 180:
+                stats["recent_unit_price_total"] += unit_price
+                stats["recent_priced_count"] += 1
             if stats["last_date"] is None or purchase_date > stats["last_date"]:
                 stats["last_date"] = purchase_date
                 stats["last_unit_price"] = unit_price
-        else:
-            stats = supermarket_map.setdefault(
-                supermarket,
-                {
-                    "supermarket": supermarket,
-                    "purchase_count": 0,
-                    "unit_price_total": 0.0,
-                    "priced_count": 0,
-                    "last_unit_price": None,
-                    "last_date": None,
-                },
-            )
-            stats["purchase_count"] += 1
 
     supermarket_stats = []
     for stats in supermarket_map.values():
@@ -1196,14 +1218,39 @@ def api_v1_product_stats(product_id):
             if stats["priced_count"]
             else None
         )
+        recent_average_unit_price = (
+            stats["recent_unit_price_total"] / stats["recent_priced_count"]
+            if stats["recent_priced_count"]
+            else None
+        )
+        recommendation_unit_price = (
+            stats["weighted_unit_price_total"] / stats["weight_total"]
+            if stats["weight_total"]
+            else None
+        )
         supermarket_stats.append(
             {
                 "supermarket": stats["supermarket"],
                 "purchase_count": stats["purchase_count"],
+                "priced_count": stats["priced_count"],
+                "recent_priced_count": stats["recent_priced_count"],
                 "average_unit_price": (
                     round(average_unit_price, 2)
                     if average_unit_price is not None
                     else None
+                ),
+                "recent_average_unit_price": (
+                    round(recent_average_unit_price, 2)
+                    if recent_average_unit_price is not None
+                    else None
+                ),
+                "recommendation_unit_price": (
+                    round(recommendation_unit_price, 2)
+                    if recommendation_unit_price is not None
+                    else None
+                ),
+                "recommendation_confidence": confidence_label(
+                    stats["priced_count"], stats["recent_priced_count"]
                 ),
                 "last_unit_price": (
                     round(stats["last_unit_price"], 2)
@@ -1219,22 +1266,59 @@ def api_v1_product_stats(product_id):
         )
     supermarket_stats.sort(
         key=lambda item: (
-            item["average_unit_price"] is None,
-            item["average_unit_price"] if item["average_unit_price"] is not None else 999999,
+            item["recommendation_unit_price"] is None,
+            item["recommendation_unit_price"]
+            if item["recommendation_unit_price"] is not None
+            else 999999,
             item["supermarket"].casefold(),
         )
     )
 
-    recommended = next(
-        (item for item in supermarket_stats if item["average_unit_price"] is not None),
-        None,
-    )
     habitual = None
     if supermarket_stats:
         habitual = sorted(
             supermarket_stats,
             key=lambda item: (-item["purchase_count"], item["supermarket"].casefold()),
         )[0]
+
+    priced_candidates = [
+        item for item in supermarket_stats if item["recommendation_unit_price"] is not None
+    ]
+    best_candidate = priced_candidates[0] if priced_candidates else None
+    recommended = best_candidate
+    recommendation_reason = "best_recent_value" if best_candidate else None
+
+    if habitual and habitual.get("recommendation_unit_price") is not None:
+        if best_candidate is None:
+            recommended = habitual
+            recommendation_reason = "habitual_only_priced"
+        elif best_candidate["supermarket"] == habitual["supermarket"]:
+            recommended = habitual
+            recommendation_reason = "habitual_is_best"
+        else:
+            habitual_price = float(habitual["recommendation_unit_price"])
+            candidate_price = float(best_candidate["recommendation_unit_price"])
+            saving = habitual_price - candidate_price
+            minimum_saving = max(0.10, habitual_price * 0.05)
+            candidate_has_evidence = (
+                int(best_candidate.get("priced_count") or 0) >= 2
+                and int(best_candidate.get("recent_priced_count") or 0) >= 1
+            )
+            habitual_has_evidence = int(habitual.get("priced_count") or 0) >= 2
+
+            if saving <= 0 or saving < minimum_saving:
+                recommended = habitual
+                recommendation_reason = "habitual_small_difference"
+            elif not candidate_has_evidence and habitual_has_evidence:
+                recommended = habitual
+                recommendation_reason = "habitual_insufficient_alternative_evidence"
+            else:
+                recommended = best_candidate
+                recommendation_reason = "best_recent_value"
+
+    if recommended is not None:
+        recommended = dict(recommended)
+        recommended["recommendation_reason"] = recommendation_reason
 
     latest = None
     if rows:
@@ -1276,10 +1360,25 @@ def api_v1_product_stats(product_id):
             "recommended_supermarket": recommended,
             "habitual_supermarket": habitual,
             "supermarket_stats": supermarket_stats,
+            "recommendation": {
+                "reason": recommendation_reason,
+                "confidence": (
+                    recommended.get("recommendation_confidence")
+                    if recommended is not None
+                    else None
+                ),
+                "reference_date": (
+                    reference_date.strftime("%Y-%m-%d")
+                    if reference_date is not None
+                    else None
+                ),
+                "recent_window_days": 180,
+                "minimum_saving_percent": 5.0,
+                "minimum_saving_unit": 0.10,
+            },
             "last_purchase": latest,
         }
     )
-
 
 @app.route("/api/v1/spending/summary", methods=["GET"])
 def api_v1_spending_summary():
