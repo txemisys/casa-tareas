@@ -86,19 +86,32 @@ async function undoCompletionToToday(completionId){try{var r=await api("/api/com
 function householdOverviewPanel(){
   var shopping=(state.shopping_list||[]).length;
   var blocked=(state.tasks||[]).filter(function(t){return t.active&&t.blocked_by_supplies}).length;
-  var spend="—",change="",tickets="—";
+  var spend="—",change="",tickets="—",peopleSpend="",unlinked="";
   if(homeGastosSummary){
-    var cur=homeGastosSummary.current_month||{},pct=homeGastosSummary.change_percent;
+    var cur=homeGastosSummary.current_month||{},pct=homeGastosSummary.change_percent,people=homeGastosSummary.people_spending||[];
     spend=typeof gastosMoney==="function"?gastosMoney(cur.total||0):Number(cur.total||0).toFixed(2)+" €";
     tickets=Number(cur.ticket_count||0);
     if(pct!=null)change=(pct>0?"+":"")+gastosNumber(pct,1)+"% vs. mes anterior";
+    if(people.length){
+      peopleSpend='<div class="household-person-spend"><div class="section">💶 Gasto por persona</div><div class="household-person-grid">'+people.map(function(p){
+        var amount=typeof gastosMoney==="function"?gastosMoney(p.current_total||0):Number(p.current_total||0).toFixed(2)+" €";
+        var share=gastosNumber(p.share_percent||0,1)+"%";
+        var delta=p.change_percent==null?"":((p.change_percent>0?"+":"")+gastosNumber(p.change_percent,1)+"% vs. mes anterior");
+        return '<div class="household-person-card"><div class="avatar" style="background:'+esc(p.person_color||"#e7eefb")+'">'+esc(p.person_icon||"👤")+'</div><div class="household-person-main"><strong>'+esc(p.person_name)+'</strong><span class="muted">'+esc(p.gastos_user_name)+'</span></div><div class="household-person-total"><strong>'+esc(amount)+'</strong><span>'+esc(share)+'</span>'+(delta?'<small>'+esc(delta)+'</small>':"")+'</div></div>';
+      }).join("")+'</div></div>';
+    }
+    var unlinkedTotal=Number(homeGastosSummary.unlinked_user_total||0),unlinkedUsers=homeGastosSummary.unlinked_user_spending||[];
+    if(unlinkedTotal>0){
+      var names=unlinkedUsers.slice(0,4).map(function(x){return x.user_name}).join(", ");
+      unlinked='<div class="settings-note household-unlinked"><strong>Gasto sin persona vinculada: '+esc(typeof gastosMoney==="function"?gastosMoney(unlinkedTotal):unlinkedTotal.toFixed(2)+" €")+'</strong>'+(names?'<div>'+esc(names)+'</div>':"")+'<button class="ghost" onclick="go(\'people\')">Vincular personas</button></div>';
+    }
   }
   return '<section class="activity-panel"><div class="activity-head"><div><div class="suggestions-title">🏠 Resumen del hogar</div><div class="suggestions-help">Tareas, compra e impacto de Gastos en un solo vistazo.</div></div><button class="ghost" onclick="go(\'gastos\')">Abrir Gastos</button></div><div class="stats" style="margin:0">'+
     '<div class="stat"><div class="count">'+shopping+'</div><div>Por comprar</div><div class="muted">productos</div></div>'+
     '<div class="stat"><div class="count">'+blocked+'</div><div>Bloqueadas</div><div class="muted">tareas por material</div></div>'+
     '<div class="stat"><div class="count">'+esc(spend)+'</div><div>Gasto del mes</div><div class="muted">'+esc(change||"sin comparación")+'</div></div>'+
     '<div class="stat"><div class="count">'+esc(tickets)+'</div><div>Tickets</div><div class="muted">este mes</div></div>'+
-  '</div>'+(homeGastosError?'<div class="settings-warning" style="margin-top:10px">No se pudo cargar el resumen de Gastos: '+esc(homeGastosError)+'</div>':"")+'</section>';
+  '</div>'+peopleSpend+unlinked+(homeGastosError?'<div class="settings-warning" style="margin-top:10px">No se pudo cargar el resumen de Gastos: '+esc(homeGastosError)+'</div>':"")+'</section>';
 }
 async function loadHomeGastosSummary(){
   if(homeGastosLoading||homeGastosLoaded)return;
