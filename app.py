@@ -1799,7 +1799,7 @@ def settings_json(conn):
     runtime = runtime_settings_json()
     runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.3.7",
+        "version": "1.3.8",
         "runtime": runtime,
         "telegram": telegram,
         "calendars": {
@@ -3118,7 +3118,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.3.7"}
+    return {"ok": True, "version": "1.3.8"}
 
 
 @app.get("/api/state")
