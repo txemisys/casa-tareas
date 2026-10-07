@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import re
 import socket
 import sqlite3
 import time
@@ -3426,6 +3427,68 @@ def gastos_proxy_call(path, method="GET", payload=None):
             raise HTTPException(502, str(exc))
 
 
+COUNT_PURCHASE_UNITS = {
+    "", "u", "ud", "uds", "unidad", "unidades", "pieza", "piezas",
+    "botella", "botellas", "paquete", "paquetes", "pack", "packs",
+    "caja", "cajas", "lata", "latas", "bolsa", "bolsas",
+}
+MEASURE_PURCHASE_UNITS = {
+    "kg", "g", "gr", "gramo", "gramos", "l", "litro", "litros",
+    "ml", "mililitro", "mililitros",
+}
+
+
+def parse_purchase_quantity(value):
+    raw = (value or "").strip()
+    if not raw:
+        return {
+            "raw": raw,
+            "value": None,
+            "unit": None,
+            "status": "missing",
+            "estimate_eligible": False,
+        }
+
+    match = re.match(r"^([0-9]+(?:[.,][0-9]+)?)\s*([^0-9]*)$", raw, re.IGNORECASE)
+    if not match:
+        return {
+            "raw": raw,
+            "value": None,
+            "unit": None,
+            "status": "unrecognized",
+            "estimate_eligible": False,
+        }
+
+    amount = float(match.group(1).replace(",", "."))
+    unit = match.group(2).strip().casefold().rstrip(".")
+    if amount <= 0:
+        return {
+            "raw": raw,
+            "value": None,
+            "unit": unit or None,
+            "status": "unrecognized",
+            "estimate_eligible": False,
+        }
+
+    if unit in COUNT_PURCHASE_UNITS:
+        status = "count"
+        eligible = True
+    elif unit in MEASURE_PURCHASE_UNITS:
+        status = "measurement_unverified"
+        eligible = False
+    else:
+        status = "unit_unrecognized"
+        eligible = False
+
+    return {
+        "raw": raw,
+        "value": amount,
+        "unit": unit or None,
+        "status": status,
+        "estimate_eligible": eligible,
+    }
+
+
 @app.get("/api/gastos/shopping-plan")
 def gastos_shopping_plan():
     with db() as conn:
@@ -3452,6 +3515,12 @@ def gastos_shopping_plan():
             "estimated_saving_percent": None,
             "recommendation_confidence": None,
             "recommendation_reason": None,
+            "purchase_quantity_parsed": parse_purchase_quantity(
+                item.get("purchase_quantity", "")
+            ),
+            "estimated_line_total": None,
+            "estimated_baseline_total": None,
+            "estimated_saving_total": None,
             "last_purchase": None,
             "pricing_available": False,
         }
@@ -3498,6 +3567,29 @@ def gastos_shopping_plan():
                         (saving / float(habitual_price)) * 100,
                         1,
                     )
+
+                parsed_quantity = plan_item["purchase_quantity_parsed"]
+                if (
+                    parsed_quantity.get("estimate_eligible")
+                    and parsed_quantity.get("value") is not None
+                    and recommended_price is not None
+                ):
+                    multiplier = float(parsed_quantity["value"])
+                    plan_item["estimated_line_total"] = round(
+                        float(recommended_price) * multiplier, 2
+                    )
+                    if habitual_price is not None:
+                        plan_item["estimated_baseline_total"] = round(
+                            float(habitual_price) * multiplier, 2
+                        )
+                        plan_item["estimated_saving_total"] = round(
+                            max(
+                                0.0,
+                                float(habitual_price) - float(recommended_price),
+                            )
+                            * multiplier,
+                            2,
+                        )
             except HTTPException:
                 pass
 
@@ -3522,6 +3614,10 @@ def gastos_shopping_plan():
         priced_count = 0
         comparable_count = 0
         savings_count = 0
+        basket_total = 0.0
+        basket_baseline_total = 0.0
+        basket_saving_total = 0.0
+        basket_priced_count = 0
         for item in group_items:
             price = item.get("recommended_unit_price")
             if price is not None:
@@ -3537,6 +3633,17 @@ def gastos_shopping_plan():
                 if float(saving) > 0:
                     savings_count += 1
 
+            line_total = item.get("estimated_line_total")
+            if line_total is not None:
+                basket_total += float(line_total)
+                basket_priced_count += 1
+            line_baseline = item.get("estimated_baseline_total")
+            if line_baseline is not None:
+                basket_baseline_total += float(line_baseline)
+            line_saving = item.get("estimated_saving_total")
+            if line_saving is not None:
+                basket_saving_total += float(line_saving)
+
         total_saving += group_saving
         total_savings_count += savings_count
         ordered_groups.append(
@@ -3550,8 +3657,32 @@ def gastos_shopping_plan():
                 "priced_count": priced_count,
                 "comparable_count": comparable_count,
                 "savings_count": savings_count,
+                "estimated_basket_total": round(basket_total, 2),
+                "estimated_basket_baseline_total": round(basket_baseline_total, 2),
+                "estimated_basket_saving": round(basket_saving_total, 2),
+                "basket_priced_count": basket_priced_count,
+                "basket_complete": basket_priced_count == len(group_items),
             }
         )
+
+    basket_total = sum(
+        float(item["estimated_line_total"])
+        for item in items
+        if item.get("estimated_line_total") is not None
+    )
+    basket_baseline_total = sum(
+        float(item["estimated_baseline_total"])
+        for item in items
+        if item.get("estimated_baseline_total") is not None
+    )
+    basket_saving_total = sum(
+        float(item["estimated_saving_total"])
+        for item in items
+        if item.get("estimated_saving_total") is not None
+    )
+    basket_priced_count = sum(
+        1 for item in items if item.get("estimated_line_total") is not None
+    )
 
     return {
         "items": items,
@@ -3565,6 +3696,12 @@ def gastos_shopping_plan():
         ),
         "estimated_saving_unit_total": round(total_saving, 2),
         "savings_count": total_savings_count,
+        "estimated_basket_total": round(basket_total, 2),
+        "estimated_basket_baseline_total": round(basket_baseline_total, 2),
+        "estimated_basket_saving": round(basket_saving_total, 2),
+        "basket_priced_count": basket_priced_count,
+        "basket_complete": basket_priced_count == len(items),
+        "basket_unpriced_count": len(items) - basket_priced_count,
     }
 
 
