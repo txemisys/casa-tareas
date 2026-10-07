@@ -2614,7 +2614,6 @@ def test_frontend_uses_external_script_bundle(client):
     assert "function goShoppingPlan()" in bundle.text
     assert "Usuario correspondiente en Gastos" in bundle.text
     assert "gastos_user_name" in bundle.text
-    assert "function gastosUserDatalist" in gastos_bundle.text
     assert "function uiState(" in bundle.text
     assert "uiText(a.name)" in bundle.text
     assert "uiText(a.description)" in bundle.text
@@ -2653,6 +2652,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'Sincronizar ahora' in bundle.text
     gastos_bundle = client.get("/static/gastos.js?v=1.5.0")
     assert gastos_bundle.status_code == 200
+    assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
     assert gastos_bundle.status_code == 200
     assert "function gastosToggleChartSeries" in gastos_bundle.text
