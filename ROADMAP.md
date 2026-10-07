@@ -101,6 +101,15 @@ Opciones a evaluar:
 - [x] Estados de carga/error homogéneos en Casa, plan de compra y Gastos integrado.
 - [~] Auditoría visual completa de español, inglés y alemán: auditoría estática y datos iniciales conocidos cubierta; falta validación visual final en navegador real.
 
+### 7. Salud de la integración y calidad de vínculos — COMPLETADO
+Objetivo: detectar problemas y oportunidades de vinculación sin tocar datos automáticamente.
+- [x] Diagnóstico de Inventario vinculado/no vinculado.
+- [x] Diagnóstico de Personas vinculadas/no vinculadas.
+- [x] Detectar vínculos obsoletos a productos/usuarios que ya no aparecen en Gastos.
+- [x] Sugerir solo coincidencias exactas de nombre.
+- [x] Nunca aplicar esas coincidencias automáticamente.
+- [x] Panel de salud en Configuración → Gastos con accesos a Inventario, Personas y Gastos.
+
 ### 6. Personas compartidas — COMPLETADO (fase segura)
 Objetivo: vincular personas de Casa con usuarios históricos de Gastos sin romper tickets ni nombres existentes.
 - [x] Vínculo explícito y estable anclado al ID de Persona de Casa y al nombre histórico exacto de Gastos.
@@ -146,4 +155,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-La siguiente tarea es desplegar la versión 1.5.0 y validar dos frentes: (1) la auditoría visual final en alemán/inglés y móvil; (2) el nuevo vínculo Persona Casa ↔ usuario histórico de Gastos desde Personas, comprobando que los tickets siguen guardando el nombre histórico exacto. Después, continuar con mejoras de integración orientadas a automatización y calidad de datos, sin alterar las bases reales ni hacer matching difuso.
+La siguiente tarea es desplegar la versión 1.5.1 y validar visualmente: idiomas, móvil, Personas compartidas y el nuevo panel Configuración → Gastos → Revisar integración. Después, priorizar mejoras operativas que reduzcan trabajo manual sin aplicar vínculos ambiguos ni modificar históricos.

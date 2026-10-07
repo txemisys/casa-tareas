@@ -55,7 +55,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.5.0")
+app = FastAPI(title="Casa Tareas", version="1.5.1")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -1806,7 +1806,7 @@ def settings_json(conn):
     runtime = runtime_settings_json()
     runtime["language"] = get_meta(conn, "setting_language", "es")
     return {
-        "version": "1.5.0",
+        "version": "1.5.1",
         "runtime": runtime,
         "telegram": telegram,
         "calendars": {
@@ -3126,7 +3126,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.5.0"}
+    return {"ok": True, "version": "1.5.1"}
 
 
 @app.get("/api/state")
@@ -3996,6 +3996,133 @@ def gastos_users():
             for user_name in users
         ],
         "linked_count": sum(1 for user_name in users if user_name in by_user),
+    }
+
+
+@app.get("/api/gastos/integration-health")
+def gastos_integration_health():
+    products_payload = gastos_proxy_call("/api/v1/products?limit=500")
+    lookups = gastos_proxy_call("/api/v1/lookups")
+    products = list(products_payload.get("items") or [])
+    users = list(lookups.get("users") or [])
+
+    product_by_id = {
+        int(product["id"]): product
+        for product in products
+        if product.get("id") is not None
+    }
+    products_by_name: dict[str, list[dict]] = {}
+    for product in products:
+        key = str(product.get("name") or "").strip().casefold()
+        if key:
+            products_by_name.setdefault(key, []).append(product)
+
+    users_by_name: dict[str, list[str]] = {}
+    for user_name in users:
+        key = str(user_name or "").strip().casefold()
+        if key:
+            users_by_name.setdefault(key, []).append(user_name)
+
+    with db() as conn:
+        inventory_rows = conn.execute(
+            """SELECT id,name,gastos_product_id
+               FROM inventory_items
+               WHERE active=1
+               ORDER BY name COLLATE NOCASE,id"""
+        ).fetchall()
+        people_rows = conn.execute(
+            """SELECT id,name,color,icon,gastos_user_name
+               FROM people
+               WHERE active=1
+               ORDER BY name COLLATE NOCASE,id"""
+        ).fetchall()
+
+    product_suggestions = []
+    stale_product_links = []
+    linked_inventory = 0
+    for row in inventory_rows:
+        linked_id = row["gastos_product_id"]
+        if linked_id is not None:
+            linked_inventory += 1
+            if int(linked_id) not in product_by_id:
+                stale_product_links.append(
+                    {
+                        "inventory_id": row["id"],
+                        "inventory_name": row["name"],
+                        "gastos_product_id": linked_id,
+                    }
+                )
+            continue
+        matches = products_by_name.get(str(row["name"] or "").strip().casefold(), [])
+        if len(matches) == 1:
+            product_suggestions.append(
+                {
+                    "inventory_id": row["id"],
+                    "inventory_name": row["name"],
+                    "product_id": matches[0]["id"],
+                    "product_name": matches[0].get("name") or row["name"],
+                }
+            )
+
+    user_suggestions = []
+    stale_user_links = []
+    linked_people = 0
+    known_users = set(users)
+    for row in people_rows:
+        linked_user = (row["gastos_user_name"] or "").strip()
+        if linked_user:
+            linked_people += 1
+            if linked_user not in known_users:
+                stale_user_links.append(
+                    {
+                        "person_id": row["id"],
+                        "person_name": row["name"],
+                        "gastos_user_name": linked_user,
+                    }
+                )
+            continue
+        matches = users_by_name.get(str(row["name"] or "").strip().casefold(), [])
+        if len(matches) == 1:
+            user_suggestions.append(
+                {
+                    "person_id": row["id"],
+                    "person_name": row["name"],
+                    "gastos_user_name": matches[0],
+                }
+            )
+
+    linked_gastos_users = {
+        (row["gastos_user_name"] or "").strip()
+        for row in people_rows
+        if (row["gastos_user_name"] or "").strip()
+    }
+
+    return {
+        "inventory": {
+            "total": len(inventory_rows),
+            "linked": linked_inventory,
+            "unlinked": len(inventory_rows) - linked_inventory,
+            "exact_match_suggestions": product_suggestions,
+            "stale_links": stale_product_links,
+        },
+        "products": {
+            "total": len(products),
+        },
+        "people": {
+            "total": len(people_rows),
+            "linked": linked_people,
+            "unlinked": len(people_rows) - linked_people,
+            "exact_match_suggestions": user_suggestions,
+            "stale_links": stale_user_links,
+        },
+        "users": {
+            "total": len(users),
+            "linked": sum(1 for user_name in users if user_name in linked_gastos_users),
+            "unlinked": sum(1 for user_name in users if user_name not in linked_gastos_users),
+        },
+        "status": "attention"
+        if stale_product_links or stale_user_links
+        else ("suggestions" if product_suggestions or user_suggestions else "ok"),
     }
 
 
