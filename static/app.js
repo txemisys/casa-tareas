@@ -99,8 +99,8 @@ function householdDataAlertsPanel(){
     var productSuggestions=inv.exact_match_suggestions||[],userSuggestions=people.exact_match_suggestions||[];
     if(staleProducts.length||staleUsers.length){
       var staleParts=[];
-      if(staleProducts.length)staleParts.push(staleProducts.length+" producto"+(staleProducts.length===1?"":"s")+" con vínculo obsoleto");
-      if(staleUsers.length)staleParts.push(staleUsers.length+" persona"+(staleUsers.length===1?"":"s")+" con vínculo obsoleto");
+      if(staleProducts.length)staleParts.push(staleProducts.length+" "+uiText(staleProducts.length===1?"producto con vínculo obsoleto":"productos con vínculo obsoleto"));
+      if(staleUsers.length)staleParts.push(staleUsers.length+" "+uiText(staleUsers.length===1?"persona con vínculo obsoleto":"personas con vínculo obsoleto"));
       alerts.push({level:"danger",icon:"⚠️",title:"Vínculos que requieren revisión",detail:staleParts.join(" · "),action:"settings",label:"Revisar integración"});
     }
     if(productSuggestions.length||userSuggestions.length){
@@ -111,7 +111,7 @@ function householdDataAlertsPanel(){
     }
   }
   if(!alerts.length)return"";
-  return '<section class="household-alerts"><div class="household-alerts-head"><div><strong>⚠️ Requiere atención</strong><div class="muted">Solo mostramos incidencias accionables; no se modifica ningún dato automáticamente.</div></div><span class="household-alert-count">'+alerts.length+'</span></div><div class="household-alert-list">'+alerts.map(function(a){return'<div class="household-alert household-alert-'+esc(a.level)+'"><div class="household-alert-icon">'+a.icon+'</div><div><strong>'+esc(a.title)+'</strong><div class="muted">'+esc(a.detail)+'</div></div><button class="ghost" onclick="go(\''+a.action+'\')">'+esc(a.label)+'</button></div>'}).join("")+'</div></section>';
+  return '<section class="household-alerts"><div class="household-alerts-head"><div><strong>⚠️ '+esc(uiText("Requiere atención"))+'</strong><div class="muted">'+esc(uiText("Solo mostramos incidencias accionables; no se modifica ningún dato automáticamente."))+'</div></div><span class="household-alert-count">'+alerts.length+'</span></div><div class="household-alert-list">'+alerts.map(function(a){return'<div class="household-alert household-alert-'+esc(a.level)+'"><div class="household-alert-icon">'+a.icon+'</div><div><strong>'+esc(uiText(a.title))+'</strong><div class="muted">'+esc(a.detail)+'</div></div><button class="ghost" onclick="go(\''+a.action+'\')">'+esc(uiText(a.label))+'</button></div>'}).join("")+'</div></section>';
 }
 
 function householdOverviewPanel(){
