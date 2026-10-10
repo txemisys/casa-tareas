@@ -147,6 +147,17 @@ Objetivo: mostrar en el Tablero solo incidencias accionables sin modificar datos
 - [x] No mostrar el bloque cuando no hay incidencias.
 - [x] Mantener matching manual: ninguna alerta aplica enlaces automáticamente.
 
+### 11. Reutilización de tareas y búsqueda — COMPLETADO
+Objetivo: facilitar la configuración de hogares con áreas similares y localizar tareas rápidamente.
+- [x] Duplicar un área activa con todas sus tareas activas.
+- [x] Copiar una tarea individual a otra área.
+- [x] Conservar recurrencia, duración, tipo, descripción, definición de terminada y materiales.
+- [x] Reiniciar las fechas de las copias desde una fecha elegida.
+- [x] No copiar historial, realizaciones, documentos ni estado de Hoy.
+- [x] Responsables solo se copian si el usuario lo solicita expresamente.
+- [x] Buscador de tareas por título, descripción, área, categoría, definición de terminada y notas.
+- [x] El buscador incluye tareas archivadas y permite abrir directamente la tarea.
+
 ## Reglas de trabajo
 
 Antes de mergear cambios relevantes:
@@ -185,4 +196,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-Tras desplegar 1.7.0 y validar las alertas de calidad de datos del Tablero, el siguiente paso es decidir qué automatizaciones domésticas aportan valor real. Mantener como reglas que ninguna automatización modifique históricos de Gastos ni aplique matching ambiguo.
+Tras desplegar 1.8.0, validar la duplicación de áreas/tareas y el buscador. Después, decidir qué automatizaciones domésticas aportan valor real. Mantener como reglas que ninguna automatización modifique históricos de Gastos ni aplique matching ambiguo.
