@@ -511,6 +511,107 @@ def test_task_create_edit_archive_and_undo(client):
     assert task_from_state(get_state(client), task_id)["active"] is True
 
 
+def test_task_copy_preserves_rules_but_not_history(client):
+    state = get_state(client)
+    source_area = client.post(
+        "/api/areas",
+        json={"name": "Moto A", "description": "", "color": "#e7eefb", "icon": "🏍️", "owner_person_id": None},
+    ).json()["id"]
+    target_area = client.post(
+        "/api/areas",
+        json={"name": "Moto B", "description": "", "color": "#e7eefb", "icon": "🏍️", "owner_person_id": None},
+    ).json()["id"]
+    item = client.post(
+        "/api/inventory",
+        json={"name": "Aceite cadena", "category": "Moto", "stock_status": "ok"},
+    ).json()["id"]
+    created = client.post(
+        "/api/tasks",
+        json=task_payload(
+            title="Engrasar cadena",
+            area_id=source_area,
+            frequency_days=30,
+            estimated_minutes=15,
+            supply_ids=[item],
+        ),
+    )
+    task_id = created.json()["id"]
+    person_id = state["people"][0]["id"]
+    assert client.post(f"/api/tasks/{task_id}/complete", json={"person_id": person_id}).status_code == 200
+
+    copied = client.post(
+        f"/api/tasks/{task_id}/copy",
+        json={"area_id": target_area, "start_date": "2026-11-01", "copy_owner": False},
+    )
+    assert copied.status_code == 200
+    new_id = copied.json()["id"]
+    after = get_state(client)
+    copy = task_from_state(after, new_id)
+    assert copy["area"]["id"] == target_area
+    assert copy["title"] == "Engrasar cadena"
+    assert copy["frequency_days"] == 30
+    assert copy["estimated_minutes"] == 15
+    assert copy["initial_due_date"] == "2026-11-01"
+    assert copy["supply_ids"] == [item]
+    assert copy["last_completion"] is None
+
+
+def test_area_duplicate_copies_active_tasks_without_history(client):
+    area_id = client.post(
+        "/api/areas",
+        json={"name": "Piso A", "description": "Mantenimiento", "color": "#e7eefb", "icon": "🏠", "owner_person_id": None},
+    ).json()["id"]
+    active = client.post(
+        "/api/tasks",
+        json=task_payload(title="Revisar caldera", area_id=area_id, frequency_days=180),
+    ).json()["id"]
+    archived = client.post(
+        "/api/tasks",
+        json=task_payload(title="Tarea antigua", area_id=area_id),
+    ).json()["id"]
+    assert client.delete(f"/api/tasks/{archived}").status_code == 200
+
+    duplicated = client.post(
+        f"/api/areas/{area_id}/duplicate",
+        json={"name": "Piso B", "start_date": "2026-12-01", "copy_owner": False},
+    )
+    assert duplicated.status_code == 200
+    data = duplicated.json()
+    assert data["task_count"] == 1
+    state = get_state(client)
+    new_area = next(a for a in state["areas"] if a["id"] == data["id"])
+    assert new_area["name"] == "Piso B"
+    copied = [t for t in state["tasks"] if t["area_id"] == data["id"]]
+    assert len(copied) == 1
+    assert copied[0]["title"] == "Revisar caldera"
+    assert copied[0]["initial_due_date"] == "2026-12-01"
+    assert copied[0]["id"] != active
+
+
+def test_task_search_finds_title_description_area_and_archived(client):
+    area_id = client.post(
+        "/api/areas",
+        json={"name": "Moto roja", "description": "", "color": "#e7eefb", "icon": "🏍️", "owner_person_id": None},
+    ).json()["id"]
+    first = client.post(
+        "/api/tasks",
+        json=task_payload(title="Revisar presión", description="Comprobar neumáticos", area_id=area_id),
+    ).json()["id"]
+    second = client.post(
+        "/api/tasks",
+        json=task_payload(title="Cambiar aceite", description="Motor", area_id=area_id),
+    ).json()["id"]
+    assert client.delete(f"/api/tasks/{second}").status_code == 200
+
+    by_description = client.get("/api/tasks/search?q=neumáticos").json()
+    assert any(x["id"] == first for x in by_description["items"])
+    by_area = client.get("/api/tasks/search?q=moto%20roja").json()
+    ids = {x["id"] for x in by_area["items"]}
+    assert first in ids and second in ids
+    archived_result = next(x for x in by_area["items"] if x["id"] == second)
+    assert archived_result["active"] is False
+
+
 def test_area_owner_is_inherited_and_task_can_override_it(client):
     state = get_state(client)
     owner = state["people"][0]
@@ -2722,14 +2823,14 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.7.0' in root.text
-    assert '/static/gastos.js?v=1.7.0' in root.text
-    assert '/static/gastos.css?v=1.7.0' in root.text
-    assert '/static/i18n.js?v=1.7.0' in root.text
+    assert '/static/app.js?v=1.8.0' in root.text
+    assert '/static/gastos.js?v=1.8.0' in root.text
+    assert '/static/gastos.css?v=1.8.0' in root.text
+    assert '/static/i18n.js?v=1.8.0' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.7.0")
+    bundle = client.get("/static/app.js?v=1.8.0")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert "function updateHeaderAction()" in bundle.text
@@ -2737,6 +2838,10 @@ def test_frontend_uses_external_script_bundle(client):
     assert "function goShoppingPlan()" in bundle.text
     assert "Gasto por persona" in bundle.text
     assert "function householdDataAlertsPanel()" in bundle.text
+    assert "function openDuplicateArea(" in bundle.text
+    assert "function openCopyTask(" in bundle.text
+    assert "function searchTasks(" in bundle.text
+    assert '"/api/tasks/search?q="' in bundle.text
     assert "Gasto sin persona vinculada" in bundle.text
     assert "Vínculos que requieren revisión" in bundle.text
     assert "Solo mostramos incidencias accionables; no se modifica ningún dato automáticamente." in bundle.text
@@ -2759,7 +2864,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert "app-state-error" in root.text
     assert 'grid-template-columns:repeat(5,1fr)' in root.text
     assert 'id="headerPrimary"' in root.text
-    i18n = client.get("/static/i18n.js?v=1.7.0")
+    i18n = client.get("/static/i18n.js?v=1.8.0")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2795,7 +2900,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.7.0")
+    gastos_bundle = client.get("/static/gastos.js?v=1.8.0")
     assert gastos_bundle.status_code == 200
     assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
@@ -3180,7 +3285,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.7.0")
+    bundle = client.get("/static/app.js?v=1.8.0")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text
