@@ -57,7 +57,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.9.0")
+app = FastAPI(title="Casa Tareas", version="1.9.1")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -2381,7 +2381,9 @@ def telegram_help_text():
         "/mover Tarea | Área — cambiar de área\n"
         "/renombrar Tarea | Nuevo nombre\n"
         "/posponer Tarea | mañana (o AAAA-MM-DD)\n"
-        "/evento Título | AAAA-MM-DD HH:MM | Área | 1d,2h\n\n"
+        "/evento Título | AAAA-MM-DD HH:MM | Área | 1d,2h\n"
+        "/tareas — ver todas las tareas definidas\n"
+        "/help — ver esta ayuda\n\n"
         "También puedes escribir /casa seguido de cualquiera de esos comandos, "
         "por ejemplo: /casa hecha Sacar basura.\n"
         "No hay comandos de borrado desde Telegram."
@@ -2515,7 +2517,9 @@ def telegram_handle_command(chat_id, text):
             "pendientes": "/pendientes",
             "comprar": "/comprar",
             "stock": "/stock",
-            "ayuda": "/ayuda",
+            "tareas": "/tareas",
+            "help": "/help",
+            "ayuda": "/help",
         }
         command = aliases.get(sub.casefold(), "/" + sub.casefold())
         args = sub_args.strip()
@@ -2525,6 +2529,40 @@ def telegram_handle_command(chat_id, text):
         return
 
     with db() as conn:
+        if command == "/tareas":
+            rows = conn.execute(
+                """SELECT t.id,t.title,t.active,t.area_id,a.name AS area_name
+                   FROM tasks t
+                   LEFT JOIN areas a ON a.id=t.area_id
+                   ORDER BY COALESCE(a.name,'' ) COLLATE NOCASE,
+                            t.active DESC,
+                            t.title COLLATE NOCASE,
+                            t.id"""
+            ).fetchall()
+            if not rows:
+                telegram_send_message(chat_id, "📋 No hay tareas definidas.")
+                return
+            lines = [f"📋 Todas las tareas · {len(rows)}"]
+            current_area = object()
+            for row in rows:
+                area_name = row["area_name"] or "Sin área"
+                if area_name != current_area:
+                    current_area = area_name
+                    lines.append("")
+                    lines.append(f"🏠 {area_name}")
+                status = "" if row["active"] else " · archivada"
+                lines.append(f'• #{row["id"]} {row["title"]}{status}')
+            chunk = ""
+            for line in lines:
+                candidate = line if not chunk else chunk + "\n" + line
+                if len(candidate) > 3800:
+                    telegram_send_message(chat_id, chunk)
+                    chunk = line
+                else:
+                    chunk = candidate
+            if chunk:
+                telegram_send_message(chat_id, chunk)
+            return
         if command == "/hoy":
             sync_pause_states(conn)
             task_rows = conn.execute(
@@ -2968,7 +3006,7 @@ def process_telegram_updates(timeout=20):
                     if configured and int(configured) == int(chat["id"]):
                         telegram_send_message(
                             int(chat["id"]),
-                            "⚠️ No pude procesar ese comando. Revisa /ayuda o prueba de nuevo.",
+                            "⚠️ No pude procesar ese comando. Revisa /help o prueba de nuevo.",
                         )
                 except Exception:
                     pass
@@ -2993,7 +3031,8 @@ def telegram_command_definitions():
         {"command": "posponer", "description": "Posponer una tarea"},
         {"command": "evento", "description": "Crear un evento"},
         {"command": "deshacer", "description": "Deshacer el último cambio del bot"},
-        {"command": "ayuda", "description": "Ver ejemplos de comandos"},
+        {"command": "tareas", "description": "Ver todas las tareas definidas"},
+        {"command": "help", "description": "Ver ayuda y ejemplos de comandos"},
     ]
 
 
@@ -3375,7 +3414,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.9.0"}
+    return {"ok": True, "version": "1.9.1"}
 
 
 @app.get("/api/state")

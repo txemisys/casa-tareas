@@ -1329,6 +1329,45 @@ def test_editing_event_resets_telegram_delivery_state(client, monkeypatch):
     assert count == 0
 
 
+def test_telegram_help_and_tasks_commands(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    sent = []
+
+    def fake_telegram(method, payload=None):
+        if method == "sendMessage":
+            sent.append(dict(payload))
+            return {"message_id": len(sent)}
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+    chat_id = -10024682468
+
+    state = get_state(client)
+    first = state["tasks"][0]
+    assert client.delete(f"/api/tasks/{first['id']}").status_code == 200
+
+    app_module.telegram_handle_command(chat_id, "/help")
+    assert sent
+    assert "Casa Tareas · comandos" in sent[-1]["text"]
+    assert "/tareas — ver todas las tareas definidas" in sent[-1]["text"]
+    assert "/help — ver esta ayuda" in sent[-1]["text"]
+
+    sent.clear()
+    app_module.telegram_handle_command(chat_id, "/tareas")
+    combined = "\n".join(message["text"] for message in sent)
+    assert "Todas las tareas" in combined
+    assert first["title"] in combined
+    assert "archivada" in combined
+
+    commands = app_module.telegram_command_definitions()
+    by_name = {item["command"]: item["description"] for item in commands}
+    assert "help" in by_name
+    assert "tareas" in by_name
+    assert "ayuda" not in by_name
+
+
 def test_telegram_commands_create_modify_and_undo_task(client, monkeypatch):
     import app as app_module
 
