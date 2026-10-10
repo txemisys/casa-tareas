@@ -1,4 +1,7 @@
+import io
 import json
+
+from docx import Document
 from datetime import date, datetime, timedelta
 
 
@@ -509,6 +512,106 @@ def test_task_create_edit_archive_and_undo(client):
     undo = client.post(f"/api/undo/{archived.json()['undo_id']}")
     assert undo.status_code == 200
     assert task_from_state(get_state(client), task_id)["active"] is True
+
+
+def make_task_import_docx():
+    document = Document()
+    table = document.add_table(rows=1, cols=6)
+    headers = ["Tarea", "Tiempo estimado", "Por semana", "Por Mes", "Espo", "Cosi"]
+    for idx, value in enumerate(headers):
+        table.rows[0].cells[idx].text = value
+    rows = [
+        ["Limpiar baño", "30", "1", "", "", ""],
+        ["Regar plantas", "5", "3", "", "", "Plantas de cosi"],
+        ["Limpiar horno", "120", "", "Cada 3 meses", "Juntos?", "Juntos?"],
+        ["Limpiar arenero del gato", "5", "Nach Bedarf", "", "", "Gato de cosi"],
+        ["Limpiar coche", "90", "", "2xAnual?", "", ""],
+    ]
+    for values in rows:
+        cells = table.add_row().cells
+        for idx, value in enumerate(values):
+            cells[idx].text = value
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def test_docx_import_is_two_phase_and_maps_frequency(client):
+    before = len(get_state(client)["tasks"])
+    analyzed = client.post(
+        "/api/tasks/import-docx/analyze",
+        files={
+            "file": (
+                "tareas.docx",
+                make_task_import_docx(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert analyzed.status_code == 200
+    data = analyzed.json()
+    assert data["count"] == 5
+    assert len(get_state(client)["tasks"]) == before
+
+    by_title = {item["title"]: item for item in data["items"]}
+    assert by_title["Limpiar baño"]["frequency_days"] == 7
+    assert by_title["Regar plantas"]["frequency_days"] == 2
+    assert by_title["Limpiar horno"]["frequency_days"] == 90
+    assert by_title["Limpiar arenero del gato"]["recurrence_type"] == "none"
+    assert by_title["Limpiar coche"]["frequency_days"] == 182
+    assert by_title["Regar plantas"]["suggested_area_name"] == "Jardín"
+    assert "Cosi: Plantas de cosi" in by_title["Regar plantas"]["responsibility_notes"]
+
+    chosen = [by_title["Limpiar baño"], by_title["Regar plantas"]]
+    payload_items = []
+    for item in chosen:
+        payload_items.append(
+            {
+                "title": item["title"],
+                "estimated_minutes": item["estimated_minutes"],
+                "recurrence_type": item["recurrence_type"],
+                "frequency_days": item["frequency_days"],
+                "area_id": item["area_id"],
+                "area_name": item["suggested_area_name"],
+                "category": item["suggested_area_name"],
+                "task_type": "execution",
+                "responsibility_notes": item["responsibility_notes"],
+                "selected": True,
+            }
+        )
+    confirmed = client.post(
+        "/api/tasks/import-docx/confirm",
+        json={
+            "items": payload_items,
+            "create_missing_areas": True,
+            "start_date": "2026-10-15",
+        },
+    )
+    assert confirmed.status_code == 200
+    result = confirmed.json()
+    assert result["created_count"] == 2
+    state = get_state(client)
+    imported = [task for task in state["tasks"] if task["id"] in result["task_ids"]]
+    assert len(imported) == 2
+    bathroom = next(task for task in imported if task["title"] == "Limpiar baño")
+    plants = next(task for task in imported if task["title"] == "Regar plantas")
+    assert bathroom["initial_due_date"] == "2026-10-15"
+    assert bathroom["frequency_days"] == 7
+    assert bathroom["area"]["name"] == "Limpieza"
+    assert plants["frequency_days"] == 2
+    assert plants["area"]["name"] == "Jardín"
+
+
+def test_docx_import_marks_exact_existing_title_as_duplicate(client):
+    assert client.post("/api/tasks", json=task_payload(title="Limpiar baño")).status_code == 200
+    analyzed = client.post(
+        "/api/tasks/import-docx/analyze",
+        files={"file": ("tareas.docx", make_task_import_docx(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+    )
+    assert analyzed.status_code == 200
+    bathroom = next(item for item in analyzed.json()["items"] if item["title"] == "Limpiar baño")
+    assert bathroom["duplicate"] is True
+    assert bathroom["selected"] is False
 
 
 def test_task_copy_preserves_rules_but_not_history(client):
@@ -2823,14 +2926,14 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.8.0' in root.text
-    assert '/static/gastos.js?v=1.8.0' in root.text
-    assert '/static/gastos.css?v=1.8.0' in root.text
-    assert '/static/i18n.js?v=1.8.0' in root.text
+    assert '/static/app.js?v=1.9.0' in root.text
+    assert '/static/gastos.js?v=1.9.0' in root.text
+    assert '/static/gastos.css?v=1.9.0' in root.text
+    assert '/static/i18n.js?v=1.9.0' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.8.0")
+    bundle = client.get("/static/app.js?v=1.9.0")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert "function updateHeaderAction()" in bundle.text
@@ -2841,6 +2944,10 @@ def test_frontend_uses_external_script_bundle(client):
     assert "function openDuplicateArea(" in bundle.text
     assert "function openCopyTask(" in bundle.text
     assert "function searchTasks(" in bundle.text
+    assert "function openTaskImport(" in bundle.text
+    assert "function analyzeTaskDocx(" in bundle.text
+    assert "function confirmTaskDocxImport(" in bundle.text
+    assert "/api/tasks/import-docx/analyze" in bundle.text
     assert '"/api/tasks/search?q="' in bundle.text
     assert "Gasto sin persona vinculada" in bundle.text
     assert "Vínculos que requieren revisión" in bundle.text
@@ -2864,7 +2971,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert "app-state-error" in root.text
     assert 'grid-template-columns:repeat(5,1fr)' in root.text
     assert 'id="headerPrimary"' in root.text
-    i18n = client.get("/static/i18n.js?v=1.8.0")
+    i18n = client.get("/static/i18n.js?v=1.9.0")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -2900,7 +3007,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.8.0")
+    gastos_bundle = client.get("/static/gastos.js?v=1.9.0")
     assert gastos_bundle.status_code == 200
     assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
@@ -3285,7 +3392,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.8.0")
+    bundle = client.get("/static/app.js?v=1.9.0")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text
