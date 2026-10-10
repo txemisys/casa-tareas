@@ -552,7 +552,7 @@ def test_task_copy_preserves_rules_but_not_history(client):
     assert copy["frequency_days"] == 30
     assert copy["estimated_minutes"] == 15
     assert copy["initial_due_date"] == "2026-11-01"
-    assert copy["supply_ids"] == [item]
+    assert [x["id"] for x in copy["supplies"]] == [item]
     assert copy["last_completion"] is None
 
 
