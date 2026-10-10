@@ -246,6 +246,7 @@ var DE={
 };
 
 
+Object.assign(EN,{"Importar DOCX":"Import DOCX","Importar tareas desde DOCX":"Import tasks from DOCX","Analizar DOCX":"Analyze DOCX","Analizando DOCX…":"Analyzing DOCX…","Revisar importación":"Review import","Importar seleccionadas":"Import selected","Crear las áreas que no existan":"Create missing areas","Primera fecha":"First date"});
 Object.assign(EN,{"Copiar":"Copy","Copiar tarea":"Copy task","Duplicar":"Duplicate","Duplicar área y tareas":"Duplicate area and tasks","Buscando tareas…":"Searching tasks…","No se pudo buscar":"Search failed","Buscar por tarea, descripción, área, categoría...":"Search by task, description, area, category..."});
 Object.assign(EN,{
 "Resumen del hogar":"Household summary","Tareas, compra e impacto de Gastos en un solo vistazo.":"Tasks, shopping and Expenses impact at a glance.",
@@ -290,6 +291,7 @@ Object.assign(EN,{
 "Esta acción no se puede deshacer.":"This action cannot be undone.","Mueve primero todas las tareas y eventos a otra área":"Move all tasks and events to another area first",
 "Pausada":"Paused","pendiente":"overdue"
 });
+Object.assign(DE,{"Importar DOCX":"DOCX importieren","Importar tareas desde DOCX":"Aufgaben aus DOCX importieren","Analizar DOCX":"DOCX analysieren","Analizando DOCX…":"DOCX wird analysiert…","Revisar importación":"Import prüfen","Importar seleccionadas":"Auswahl importieren","Crear las áreas que no existan":"Fehlende Bereiche erstellen","Primera fecha":"Erstes Datum"});
 Object.assign(DE,{"Copiar":"Kopieren","Copiar tarea":"Aufgabe kopieren","Duplicar":"Duplizieren","Duplicar área y tareas":"Bereich und Aufgaben duplizieren","Buscando tareas…":"Aufgaben werden gesucht…","No se pudo buscar":"Suche fehlgeschlagen","Buscar por tarea, descripción, área, categoría...":"Nach Aufgabe, Beschreibung, Bereich, Kategorie suchen..."});
 Object.assign(DE,{
 "Resumen del hogar":"Haushaltsübersicht","Tareas, compra e impacto de Gastos en un solo vistazo.":"Aufgaben, Einkauf und Auswirkungen der Ausgaben auf einen Blick.",

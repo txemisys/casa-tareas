@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import ipaddress
 import json
 import os
@@ -21,6 +22,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from icalendar import Calendar
+from docx import Document
 import recurring_ical_events
 from pydantic import BaseModel, Field
 
@@ -55,7 +57,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.8.0")
+app = FastAPI(title="Casa Tareas", version="1.9.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -952,6 +954,160 @@ def duplicate_task_record(conn, task, area_id, start_date, copy_owner=False):
     new_task_id = cur.lastrowid
     set_task_supplies(conn, new_task_id, supply_ids)
     return new_task_id
+
+
+def clean_docx_cell(value):
+    text = re.sub(r"\s+", " ", value or "").strip()
+    return re.sub(r"(?<=\d)\s+(?=\d)", "", text)
+
+
+def import_minutes(value):
+    raw = clean_docx_cell(value)
+    if not raw:
+        return None, None
+    if raw.isdigit():
+        minutes = int(raw)
+        return (minutes if 1 <= minutes <= 1440 else None), (
+            None if 1 <= minutes <= 1440 else f"Duración fuera de rango: {raw}"
+        )
+    match = re.search(r"(\d+)\s*h(?:oras?)?(?:\s*(\d+)\s*min)?", raw, re.I)
+    if match:
+        minutes = int(match.group(1)) * 60 + int(match.group(2) or 0)
+        return (minutes if 1 <= minutes <= 1440 else None), None
+    match = re.search(r"(\d+)\s*min", raw, re.I)
+    if match:
+        return int(match.group(1)), None
+    return None, f"No se interpretó la duración: {raw}"
+
+
+def import_frequency(weekly, monthly):
+    week = clean_docx_cell(weekly)
+    month = clean_docx_cell(monthly)
+    raw = week or month
+    if not raw:
+        return "none", None, "", None
+    folded = raw.casefold().replace("?", "").strip()
+    if folded in {"diario", "diarios", "daily"}:
+        return "cycle", 1, raw, None
+    if folded in {"nach bedarf", "a demanda", "según necesidad", "segun necesidad"}:
+        return "none", None, raw, None
+    if week:
+        match = re.fullmatch(r"(\d+(?:[.,]\d+)?)", folded)
+        if match:
+            times = float(match.group(1).replace(",", "."))
+            if times > 0:
+                return "cycle", max(1, round(7 / times)), raw, (
+                    f"{raw} por semana se aproxima a cada {max(1, round(7 / times))} días"
+                    if times not in {1, 7}
+                    else None
+                )
+    if month:
+        if "anual" in folded:
+            match = re.search(r"(\d+)\s*x\s*anual", folded)
+            if match and int(match.group(1)) > 0:
+                times = int(match.group(1))
+                days = max(1, round(365 / times))
+                return "cycle", days, raw, (
+                    f"{raw} se aproxima a cada {days} días" if "?" in raw else None
+                )
+            return "cycle", 365, raw, None
+        match = re.search(r"cada\s+(\d+)\s+mes", folded)
+        if match:
+            return "cycle", int(match.group(1)) * 30, raw, None
+        match = re.fullmatch(r"(\d+(?:[.,]\d+)?)", folded)
+        if match:
+            times = float(match.group(1).replace(",", "."))
+            if times > 0:
+                days = max(1, round(30 / times))
+                return "cycle", days, raw, (
+                    f"{raw} por mes se aproxima a cada {days} días"
+                    if times != 1
+                    else None
+                )
+    return "none", None, raw, f"No se interpretó la frecuencia: {raw}"
+
+
+def suggested_import_area(title):
+    value = title.casefold()
+    groups = [
+        ("Mascotas", "🐾", ("gato", "arenero", "mascota")),
+        ("Ropa", "👕", ("ropa", "lavadora", "planchar", "sában", "saban", "toalla")),
+        ("Coche", "🚗", ("coche", "auto")),
+        ("Motos", "🏍️", ("moto", "hondita", "suzu")),
+        ("Jardín", "🌿", ("césped", "cesped", "seto", "planta", "hierba", "hoja", "exterior", "caminos", "entrada")),
+        ("Garaje", "🧰", ("garaje", "herramient")),
+        ("Administración", "📋", ("papel", "factura", "seguro", "document")),
+        ("Alimentación", "🍽️", ("despensa", "alimento", "compra", "plato", "lavavajillas", "encimera", "horno", "microondas", "nevera")),
+        ("Limpieza", "🧹", ("limpiar", "aspirar", "barrer", "fregar", "polvo", "baño", "bano", "basura", "papelera", "cristal", "ventana")),
+        ("Casa", "🏠", ("iluminación", "iluminacion", "pila", "termómetro", "termometro")),
+    ]
+    for name, icon, words in groups:
+        if any(word in value for word in words):
+            return name, icon
+    return "General", "🏠"
+
+
+def analyze_docx_task_rows(raw):
+    try:
+        document = Document(io.BytesIO(raw))
+    except Exception as exc:
+        raise HTTPException(400, "El archivo no es un DOCX válido") from exc
+
+    rows = []
+    for table in document.tables:
+        if not table.rows:
+            continue
+        header = [clean_docx_cell(cell.text).casefold() for cell in table.rows[0].cells]
+        task_index = next((i for i, value in enumerate(header) if "tarea" in value), None)
+        if task_index is None:
+            continue
+        time_index = next((i for i, value in enumerate(header) if "tiempo" in value), None)
+        week_index = next((i for i, value in enumerate(header) if "semana" in value), None)
+        month_index = next((i for i, value in enumerate(header) if "mes" in value), None)
+        known = {x for x in (task_index, time_index, week_index, month_index) if x is not None}
+        responsibility_indexes = [i for i in range(len(header)) if i not in known and header[i]]
+
+        for row in table.rows[1:]:
+            cells = [clean_docx_cell(cell.text) for cell in row.cells]
+            if task_index >= len(cells):
+                continue
+            title = cells[task_index].strip()
+            if not title:
+                continue
+            minutes, minutes_warning = import_minutes(
+                cells[time_index] if time_index is not None and time_index < len(cells) else ""
+            )
+            recurrence_type, frequency_days, source_frequency, frequency_warning = import_frequency(
+                cells[week_index] if week_index is not None and week_index < len(cells) else "",
+                cells[month_index] if month_index is not None and month_index < len(cells) else "",
+            )
+            responsibility = []
+            for idx in responsibility_indexes:
+                if idx < len(cells) and cells[idx]:
+                    label = clean_docx_cell(table.rows[0].cells[idx].text)
+                    responsibility.append(f"{label}: {cells[idx]}" if label else cells[idx])
+            if minutes is None and time_index is not None and time_index < len(cells):
+                unusual = cells[time_index]
+                if unusual and not minutes_warning:
+                    responsibility.insert(0, unusual)
+            area_name, area_icon = suggested_import_area(title)
+            warnings = [x for x in (minutes_warning, frequency_warning) if x]
+            rows.append(
+                {
+                    "title": title,
+                    "estimated_minutes": minutes,
+                    "recurrence_type": recurrence_type,
+                    "frequency_days": frequency_days,
+                    "source_frequency": source_frequency,
+                    "suggested_area_name": area_name,
+                    "suggested_area_icon": area_icon,
+                    "responsibility_notes": " · ".join(responsibility),
+                    "warnings": warnings,
+                }
+            )
+    if not rows:
+        raise HTTPException(400, "No se encontró ninguna tabla con una columna Tarea")
+    return rows
 
 
 def normalize_calendar_url(value):
@@ -3060,6 +3216,25 @@ class AreaDuplicateIn(BaseModel):
     copy_owner: bool = False
 
 
+class TaskImportItemIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    estimated_minutes: int | None = Field(default=None, ge=1, le=1440)
+    recurrence_type: str = "cycle"
+    frequency_days: int | None = Field(default=None, ge=1, le=3650)
+    area_id: int | None = None
+    area_name: str = Field(default="", max_length=80)
+    category: str = Field(default="General", max_length=80)
+    task_type: str = "execution"
+    responsibility_notes: str = Field(default="", max_length=1000)
+    selected: bool = True
+
+
+class TaskImportConfirmIn(BaseModel):
+    items: list[TaskImportItemIn]
+    create_missing_areas: bool = True
+    start_date: str | None = None
+
+
 class EventIn(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     description: str = ""
@@ -3200,7 +3375,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.8.0"}
+    return {"ok": True, "version": "1.9.0"}
 
 
 @app.get("/api/state")
@@ -5401,6 +5576,157 @@ def create_task(payload: TaskIn):
             entity_id=task_id,
         )
         return {"id": task_id}
+
+
+@app.post("/api/tasks/import-docx/analyze")
+async def analyze_task_docx(file: UploadFile = File(...)):
+    filename = (file.filename or "").strip()
+    if not filename.lower().endswith(".docx"):
+        raise HTTPException(400, "Selecciona un archivo .docx")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "El archivo está vacío")
+    if len(raw) > min(MAX_ATTACHMENT_BYTES, 10 * 1024 * 1024):
+        raise HTTPException(413, "El DOCX es demasiado grande")
+
+    items = analyze_docx_task_rows(raw)
+    with db() as conn:
+        active_areas = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT id,name,icon,color FROM areas WHERE active=1 ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        ]
+        area_by_name = {row["name"].casefold(): row for row in active_areas}
+        existing_titles = {
+            row["title"].strip().casefold()
+            for row in conn.execute("SELECT title FROM tasks").fetchall()
+        }
+
+    for item in items:
+        area = area_by_name.get(item["suggested_area_name"].casefold())
+        item["area_id"] = area["id"] if area else None
+        item["duplicate"] = item["title"].strip().casefold() in existing_titles
+        item["selected"] = not item["duplicate"]
+
+    return {
+        "file_name": filename,
+        "items": items,
+        "areas": active_areas,
+        "count": len(items),
+        "selected_count": sum(1 for item in items if item["selected"]),
+    }
+
+
+@app.post("/api/tasks/import-docx/confirm")
+def confirm_task_docx_import(payload: TaskImportConfirmIn):
+    selected = [item for item in payload.items if item.selected]
+    if not selected:
+        raise HTTPException(400, "Selecciona al menos una tarea para importar")
+    start_date = normalized_start_date(payload.start_date)
+    created_ids = []
+    created_areas = []
+
+    with db() as conn:
+        area_cache = {
+            row["name"].casefold(): dict(row)
+            for row in conn.execute(
+                "SELECT id,name,icon,color FROM areas WHERE active=1"
+            ).fetchall()
+        }
+        for item in selected:
+            if item.recurrence_type not in {"none", "cycle", "fixed"}:
+                raise HTTPException(400, f"Recurrencia no válida para {item.title}")
+            frequency_days = item.frequency_days if item.recurrence_type != "none" else None
+            if item.recurrence_type != "none" and not frequency_days:
+                raise HTTPException(400, f"Falta la frecuencia de {item.title}")
+
+            area_id = item.area_id
+            area_name = item.area_name.strip()
+            if area_id is not None:
+                area = conn.execute(
+                    "SELECT id FROM areas WHERE id=? AND active=1", (area_id,)
+                ).fetchone()
+                if not area:
+                    raise HTTPException(400, f"Área no válida para {item.title}")
+            elif area_name:
+                cached = area_cache.get(area_name.casefold())
+                if cached:
+                    area_id = cached["id"]
+                elif payload.create_missing_areas:
+                    suggested_name, suggested_icon = suggested_import_area(item.title)
+                    icon = suggested_icon if suggested_name.casefold() == area_name.casefold() else "🏠"
+                    try:
+                        cur = conn.execute(
+                            """INSERT INTO areas(name,description,color,icon,owner_person_id)
+                               VALUES(?,?,?,?,NULL)""",
+                            (area_name, "Creada durante importación DOCX", "#e7eefb", icon),
+                        )
+                    except sqlite3.IntegrityError:
+                        row = conn.execute(
+                            "SELECT id,name,icon,color FROM areas WHERE name=?", (area_name,)
+                        ).fetchone()
+                        if not row or not row["id"]:
+                            raise
+                        area_id = row["id"]
+                    else:
+                        area_id = cur.lastrowid
+                        created_areas.append(area_name)
+                    area_cache[area_name.casefold()] = {
+                        "id": area_id,
+                        "name": area_name,
+                        "icon": icon,
+                        "color": "#e7eefb",
+                    }
+
+            category = item.category.strip() or area_name or "General"
+            cur = conn.execute(
+                """INSERT INTO tasks(title,description,category,color,icon,recurrence_type,
+                   frequency_days,initial_due_date,anchor_date,area_id,owner_person_id,
+                   task_type,definition_of_done,responsibility_notes,estimated_minutes,
+                   active,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                (
+                    item.title.strip(),
+                    "",
+                    category,
+                    "#dcecff",
+                    "🧹",
+                    item.recurrence_type,
+                    frequency_days,
+                    start_date,
+                    start_date,
+                    area_id,
+                    None,
+                    item.task_type,
+                    "",
+                    item.responsibility_notes.strip(),
+                    item.estimated_minutes,
+                    iso_now(),
+                ),
+            )
+            task_id = cur.lastrowid
+            created_ids.append(task_id)
+            log_activity(
+                conn,
+                "task_imported",
+                f'Importada la tarea "{item.title.strip()}" desde DOCX',
+                entity_type="task",
+                entity_id=task_id,
+            )
+        log_activity(
+            conn,
+            "tasks_imported",
+            f"Importadas {len(created_ids)} tareas desde DOCX",
+            entity_type="tasks",
+        )
+
+    return {
+        "ok": True,
+        "created_count": len(created_ids),
+        "task_ids": created_ids,
+        "areas_created": created_areas,
+    }
 
 
 @app.post("/api/tasks/{task_id}/copy")
