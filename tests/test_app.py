@@ -1329,6 +1329,45 @@ def test_editing_event_resets_telegram_delivery_state(client, monkeypatch):
     assert count == 0
 
 
+def test_telegram_help_and_tasks_commands(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "TELEGRAM_BOT_TOKEN", "test-token")
+    sent = []
+
+    def fake_telegram(method, payload=None):
+        if method == "sendMessage":
+            sent.append(dict(payload))
+            return {"message_id": len(sent)}
+        raise AssertionError(f"Método inesperado: {method}")
+
+    monkeypatch.setattr(app_module, "telegram_api_request", fake_telegram)
+    chat_id = -10024682468
+
+    state = get_state(client)
+    first = state["tasks"][0]
+    assert client.delete(f"/api/tasks/{first['id']}").status_code == 200
+
+    app_module.telegram_handle_command(chat_id, "/help")
+    assert sent
+    assert "Casa Tareas · comandos" in sent[-1]["text"]
+    assert "/tareas — ver todas las tareas definidas" in sent[-1]["text"]
+    assert "/help — ver esta ayuda" in sent[-1]["text"]
+
+    sent.clear()
+    app_module.telegram_handle_command(chat_id, "/tareas")
+    combined = "\n".join(message["text"] for message in sent)
+    assert "Todas las tareas" in combined
+    assert first["title"] in combined
+    assert "archivada" in combined
+
+    commands = app_module.telegram_command_definitions()
+    by_name = {item["command"]: item["description"] for item in commands}
+    assert "help" in by_name
+    assert "tareas" in by_name
+    assert "ayuda" not in by_name
+
+
 def test_telegram_commands_create_modify_and_undo_task(client, monkeypatch):
     import app as app_module
 
@@ -2926,14 +2965,14 @@ def test_frontend_uses_external_script_bundle(client):
     root = client.get("/")
     assert root.status_code == 200
     assert root.headers["cache-control"] == "no-store"
-    assert '/static/app.js?v=1.9.0' in root.text
-    assert '/static/gastos.js?v=1.9.0' in root.text
-    assert '/static/gastos.css?v=1.9.0' in root.text
-    assert '/static/i18n.js?v=1.9.0' in root.text
+    assert '/static/app.js?v=1.9.1' in root.text
+    assert '/static/gastos.js?v=1.9.1' in root.text
+    assert '/static/gastos.css?v=1.9.1' in root.text
+    assert '/static/i18n.js?v=1.9.1' in root.text
     assert "Cargando Casa Tareas" in root.text
     assert "<script>" not in root.text
 
-    bundle = client.get("/static/app.js?v=1.9.0")
+    bundle = client.get("/static/app.js?v=1.9.1")
     assert bundle.status_code == 200
     assert "async function load()" in bundle.text
     assert "function updateHeaderAction()" in bundle.text
@@ -2971,7 +3010,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert "app-state-error" in root.text
     assert 'grid-template-columns:repeat(5,1fr)' in root.text
     assert 'id="headerPrimary"' in root.text
-    i18n = client.get("/static/i18n.js?v=1.9.0")
+    i18n = client.get("/static/i18n.js?v=1.9.1")
     assert i18n.status_code == 200
     assert '"Idioma":"Language"' in i18n.text
     assert '"Idioma":"Sprache"' in i18n.text
@@ -3007,7 +3046,7 @@ def test_frontend_uses_external_script_bundle(client):
     assert 'basket_priced_count' in bundle.text
     assert 'syncGastosNow' in bundle.text
     assert 'Sincronizar ahora' in bundle.text
-    gastos_bundle = client.get("/static/gastos.js?v=1.9.0")
+    gastos_bundle = client.get("/static/gastos.js?v=1.9.1")
     assert gastos_bundle.status_code == 200
     assert "function gastosUserDatalist" in gastos_bundle.text
     assert "goShoppingPlan()" in gastos_bundle.text
@@ -3392,7 +3431,7 @@ def test_reset_casa_requires_confirmation_and_removes_sample_data(client):
 def test_settings_expose_separate_reset_confirmation_actions(client):
     root = client.get("/")
     assert root.status_code == 200
-    bundle = client.get("/static/app.js?v=1.9.0")
+    bundle = client.get("/static/app.js?v=1.9.1")
     assert bundle.status_code == 200
     assert "openDatabaseResetConfirm" in bundle.text
     assert "No, cancelar" in bundle.text
