@@ -55,7 +55,7 @@ TELEGRAM_TASK = None
 CALENDAR_TASK = None
 GASTOS_SYNC_TASK = None
 
-app = FastAPI(title="Casa Tareas", version="1.7.0")
+app = FastAPI(title="Casa Tareas", version="1.8.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
@@ -899,6 +899,59 @@ def set_task_supplies(conn, task_id, supply_ids):
         "INSERT INTO task_supplies(task_id,item_id) VALUES(?,?)",
         [(task_id, item_id) for item_id in ids],
     )
+
+
+def normalized_start_date(value):
+    if not value:
+        return today_local().isoformat()
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise HTTPException(400, "Fecha inicial no válida")
+
+
+def duplicate_task_record(conn, task, area_id, start_date, copy_owner=False):
+    validate_task_responsibility(conn, area_id, task["owner_person_id"] if copy_owner else None)
+    supply_ids = [
+        row["item_id"]
+        for row in conn.execute(
+            """SELECT s.item_id
+               FROM task_supplies s
+               JOIN inventory_items i ON i.id=s.item_id
+               WHERE s.task_id=? AND i.active=1
+               ORDER BY s.item_id""",
+            (task["id"],),
+        ).fetchall()
+    ]
+    due = normalized_start_date(start_date)
+    cur = conn.execute(
+        """INSERT INTO tasks(title,description,category,color,icon,recurrence_type,
+           frequency_days,initial_due_date,anchor_date,area_id,owner_person_id,
+           task_type,definition_of_done,responsibility_notes,estimated_minutes,
+           active,created_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+        (
+            task["title"],
+            task["description"],
+            task["category"],
+            task["color"],
+            task["icon"],
+            task["recurrence_type"],
+            task["frequency_days"],
+            due,
+            due,
+            area_id,
+            task["owner_person_id"] if copy_owner else None,
+            task["task_type"],
+            task["definition_of_done"],
+            task["responsibility_notes"],
+            task["estimated_minutes"],
+            iso_now(),
+        ),
+    )
+    new_task_id = cur.lastrowid
+    set_task_supplies(conn, new_task_id, supply_ids)
+    return new_task_id
 
 
 def normalize_calendar_url(value):
@@ -2995,6 +3048,18 @@ class AreaMoveIn(BaseModel):
     area_id: int | None = None
 
 
+class TaskCopyIn(BaseModel):
+    area_id: int | None = None
+    start_date: str | None = None
+    copy_owner: bool = False
+
+
+class AreaDuplicateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    start_date: str | None = None
+    copy_owner: bool = False
+
+
 class EventIn(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     description: str = ""
@@ -3135,7 +3200,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.6.0"}
+    return {"ok": True, "version": "1.8.0"}
 
 
 @app.get("/api/state")
@@ -5338,6 +5403,85 @@ def create_task(payload: TaskIn):
         return {"id": task_id}
 
 
+@app.post("/api/tasks/{task_id}/copy")
+def copy_task(task_id: int, payload: TaskCopyIn):
+    with db() as conn:
+        task = task_row(conn, task_id)
+        if not task["active"]:
+            raise HTTPException(409, "Solo se pueden copiar tareas activas")
+        if payload.area_id is not None:
+            area = conn.execute(
+                "SELECT id FROM areas WHERE id=? AND active=1",
+                (payload.area_id,),
+            ).fetchone()
+            if not area:
+                raise HTTPException(400, "Área de destino no válida o archivada")
+        new_task_id = duplicate_task_record(
+            conn,
+            task,
+            payload.area_id,
+            payload.start_date,
+            payload.copy_owner,
+        )
+        log_activity(
+            conn,
+            "task_copied",
+            f'Copiada la tarea "{task["title"]}"',
+            entity_type="task",
+            entity_id=new_task_id,
+        )
+        return {"id": new_task_id}
+
+
+@app.get("/api/tasks/search")
+def search_tasks(q: str = "", limit: int = 50):
+    query = q.strip().casefold()
+    if not query:
+        return {"items": [], "count": 0}
+    limit = max(1, min(100, limit))
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT t.id,t.title,t.description,t.category,t.definition_of_done,
+                      t.responsibility_notes,t.task_type,t.active,t.icon,t.color,
+                      a.name AS area_name,a.icon AS area_icon
+               FROM tasks t
+               LEFT JOIN areas a ON a.id=t.area_id
+               ORDER BY t.active DESC,t.title COLLATE NOCASE,t.id"""
+        ).fetchall()
+    items = []
+    for row in rows:
+        haystack = " ".join(
+            str(row[key] or "")
+            for key in (
+                "title",
+                "description",
+                "category",
+                "definition_of_done",
+                "responsibility_notes",
+                "area_name",
+            )
+        ).casefold()
+        if query not in haystack:
+            continue
+        items.append(
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "description": row["description"],
+                "category": row["category"],
+                "task_type": row["task_type"],
+                "active": bool(row["active"]),
+                "icon": row["icon"],
+                "color": row["color"],
+                "area_name": row["area_name"],
+                "area_icon": row["area_icon"],
+            }
+        )
+        if len(items) >= limit:
+            break
+    return {"items": items, "count": len(items)}
+
+
 @app.put("/api/tasks/{task_id}")
 def update_task(task_id: int, payload: TaskIn):
     if payload.recurrence_type not in {"none", "cycle", "fixed"}:
@@ -5766,6 +5910,64 @@ def create_area(payload: AreaIn):
             entity_id=area_id,
         )
         return {"id": area_id, "reactivated": False}
+
+
+@app.post("/api/areas/{area_id}/duplicate")
+def duplicate_area(area_id: int, payload: AreaDuplicateIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del área no puede estar vacío")
+    with db() as conn:
+        source = conn.execute("SELECT * FROM areas WHERE id=?", (area_id,)).fetchone()
+        if not source:
+            raise HTTPException(404, "Área no encontrada")
+        if not source["active"]:
+            raise HTTPException(409, "Solo se pueden duplicar áreas activas")
+        if conn.execute("SELECT id FROM areas WHERE name=?", (name,)).fetchone():
+            raise HTTPException(409, "Ya existe un área con ese nombre")
+        owner_person_id = source["owner_person_id"] if payload.copy_owner else None
+        if owner_person_id is not None:
+            validate_task_responsibility(conn, None, owner_person_id)
+        cur = conn.execute(
+            """INSERT INTO areas(name,description,color,icon,owner_person_id)
+               VALUES(?,?,?,?,?)""",
+            (
+                name,
+                source["description"],
+                source["color"],
+                source["icon"],
+                owner_person_id,
+            ),
+        )
+        new_area_id = cur.lastrowid
+        tasks = conn.execute(
+            """SELECT * FROM tasks
+               WHERE area_id=? AND active=1
+               ORDER BY id""",
+            (area_id,),
+        ).fetchall()
+        task_ids = [
+            duplicate_task_record(
+                conn,
+                task,
+                new_area_id,
+                payload.start_date,
+                payload.copy_owner,
+            )
+            for task in tasks
+        ]
+        log_activity(
+            conn,
+            "area_duplicated",
+            f'Duplicada el área "{source["name"]}" como "{name}" · {len(task_ids)} tarea(s)',
+            entity_type="area",
+            entity_id=new_area_id,
+        )
+        return {
+            "id": new_area_id,
+            "task_count": len(task_ids),
+            "task_ids": task_ids,
+        }
 
 
 @app.put("/api/areas/{area_id}")
