@@ -158,6 +158,19 @@ Objetivo: facilitar la configuración de hogares con áreas similares y localiza
 - [x] Buscador de tareas por título, descripción, área, categoría, definición de terminada y notas.
 - [x] El buscador incluye tareas archivadas y permite abrir directamente la tarea.
 
+### 12. Importación guiada de tareas desde DOCX — COMPLETADO
+Objetivo: convertir tablas de tareas existentes en Casa Tareas sin crear datos hasta que el usuario revise la interpretación.
+- [x] Fase 1: subir y analizar un DOCX sin modificar la base de datos.
+- [x] Detectar columnas Tarea, tiempo, frecuencia semanal/mensual y notas de responsabilidad.
+- [x] Interpretar diario, veces por semana, veces por mes, cada N meses, anual y varias veces al año.
+- [x] Marcar aproximaciones y valores no interpretados para revisión manual.
+- [x] Sugerir áreas domésticas por el contenido de la tarea sin asignar personas automáticamente.
+- [x] Detectar títulos ya existentes y dejarlos desmarcados por defecto.
+- [x] Fase 2: vista previa editable y confirmación explícita.
+- [x] Crear opcionalmente las áreas que falten.
+- [x] Importar todas las tareas seleccionadas en una única transacción.
+- [x] Mantener responsables ambiguos como notas, nunca como asignaciones automáticas.
+
 ## Reglas de trabajo
 
 Antes de mergear cambios relevantes:
@@ -196,4 +209,4 @@ Ctrl + Shift + R
 
 ## Punto exacto para retomar
 
-Tras desplegar 1.8.0, validar la duplicación de áreas/tareas y el buscador. Después, decidir qué automatizaciones domésticas aportan valor real. Mantener como reglas que ninguna automatización modifique históricos de Gastos ni aplique matching ambiguo.
+Tras desplegar 1.9.0, validar la importación DOCX en dos fases con la lista doméstica real. Después, decidir qué automatizaciones domésticas aportan valor real. Mantener como reglas que ninguna automatización modifique históricos de Gastos ni aplique matching ambiguo.
